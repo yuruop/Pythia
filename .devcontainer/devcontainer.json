@@ -1,0 +1,56 @@
+{
+    "name": "Pythia Dev Container",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+    // Mount .ssh directory for git access to private repositories
+    "mounts": [
+        "source=${localEnv:HOME}/.ssh,target=/root/.ssh,type=bind,consistency=cached"
+    ],
+    // GPU support for NVIDIA RTX 3090 (2x)
+    "runArgs": [
+        "--gpus",
+        "all",
+        "--shm-size=24gb"
+    ],
+    // Workspace mount
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+    "workspaceFolder": "/workspace",
+    // Container environment variables
+    "containerEnv": {
+        "PYTHIA_HOME": "/workspace",
+        "PERL5LIB": "${containerEnv:PERL5LIB}:/workspace/scripts"
+    },
+    // Post-create setup: clone libbf and build bloomfilter library
+    "postCreateCommand": "if [ ! -d /workspace/libbf ]; then git clone https://github.com/mavam/libbf.git /workspace/libbf && cd /workspace/libbf && mkdir -p build && cd build && cmake ../ && make; else echo 'libbf already exists, skipping clone...'; fi",
+    // VS Code extensions for C++ development
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "ms-vscode.cpptools-extension-pack",
+                "ms-vscode.cmake-tools",
+                "twxs.cmake",
+                "eamodio.gitlens",
+                "mhutchie.git-graph"
+            ],
+            "settings": {
+                "editor.formatOnSave": false,
+                "files.trimTrailingWhitespace": true,
+                "files.insertFinalNewline": true,
+                "C_Cpp.default.cppStandard": "c++11",
+                "C_Cpp.default.includePath": [
+                    "/workspace/inc",
+                    "/workspace/libbf"
+                ]
+            }
+        }
+    },
+    // Remote user (root for simplicity in dev container)
+    "remoteUser": "root",
+    // Additional features (optional)
+    // "features": {
+    //     "ghcr.io/devcontainers/features/git:1": {}
+    // }
+}
