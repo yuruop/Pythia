@@ -285,6 +285,19 @@ namespace knob
 	float    tsetlin_epsilon = 0.005;
 	uint32_t tsetlin_high_bw_thresh = 3;
 	uint32_t tsetlin_rng_seed = 42;
+
+	/* Contextual Bandit (LinUCB) Prefetcher */
+	uint32_t linucb_num_actions = 15;
+	uint32_t linucb_num_features = 8;
+	float    linucb_alpha = 1.5;
+	float    linucb_lambda = 1.0;
+	uint64_t linucb_seed = 42;
+	vector<int32_t> linucb_actions;
+	uint32_t linucb_pt_size = 256;
+	uint32_t linucb_pref_degree = 1;
+	float    linucb_epsilon = 0.005;
+	uint32_t linucb_high_bw_thresh = 3;
+	uint32_t linucb_rng_seed = 42;
 }
 
 void parse_args(int argc, char *argv[])
@@ -1269,6 +1282,19 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "tsetlin_epsilon"))        { knob::tsetlin_epsilon = atof(value); }
 		else if (MATCH("", "tsetlin_high_bw_thresh")){ knob::tsetlin_high_bw_thresh = atoi(value); }
 		else if (MATCH("", "tsetlin_rng_seed"))       { knob::tsetlin_rng_seed = atoi(value); }
+
+		/* Contextual Bandit (LinUCB) Prefetcher knobs */
+		else if (MATCH("", "linucb_num_actions"))    { knob::linucb_num_actions = atoi(value); }
+		else if (MATCH("", "linucb_num_features"))   { knob::linucb_num_features = atoi(value); }
+		else if (MATCH("", "linucb_alpha"))           { knob::linucb_alpha = atof(value); }
+		else if (MATCH("", "linucb_lambda"))          { knob::linucb_lambda = atof(value); }
+		else if (MATCH("", "linucb_seed"))            { knob::linucb_seed = atol(value); }
+		else if (MATCH("", "linucb_actions"))         { knob::linucb_actions = get_array_int(value); }
+		else if (MATCH("", "linucb_pt_size"))         { knob::linucb_pt_size = atoi(value); }
+		else if (MATCH("", "linucb_pref_degree"))    { knob::linucb_pref_degree = atoi(value); }
+		else if (MATCH("", "linucb_epsilon"))         { knob::linucb_epsilon = atof(value); }
+		else if (MATCH("", "linucb_high_bw_thresh")) { knob::linucb_high_bw_thresh = atoi(value); }
+		else if (MATCH("", "linucb_rng_seed"))        { knob::linucb_rng_seed = atoi(value); }
 
     else
     {

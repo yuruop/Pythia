@@ -27,6 +27,16 @@ die "Supply csv file with --csv\n" unless defined $input_file;
 # Default tlist directory: $PYTHIA_HOME/experiments
 $tlist_dir = "$ENV{'PYTHIA_HOME'}/experiments" unless defined $tlist_dir;
 
+# Normalize trailing slashes off the dir path
+$dir =~ s{/+$}{};
+
+# Ensure download directory exists (mkdir -p handles nested paths)
+unless (-d $dir) {
+    system("mkdir -p $dir");
+    die "Cannot create download directory '$dir': $!\n" unless -d $dir;
+    print "Created download directory: $dir\n";
+}
+
 # ----------------------------------------------------------------------
 # Step 1: Collect unique trace filenames from all .tlist files
 # ----------------------------------------------------------------------
