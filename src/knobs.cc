@@ -271,20 +271,20 @@ namespace knob
 	std::string 	le_featurewise_plot_file_name;
 	bool 			le_featurewise_remove_plot_script;
 
-		/* Tsetlin Machine Prefetcher */
-		uint32_t tsetlin_num_clauses = 128;
-		uint32_t tsetlin_num_features = 48;
-		uint32_t tsetlin_num_actions = 15;
-		uint32_t tsetlin_num_states = 8;
-		float    tsetlin_s = 3.0;
-		int32_t  tsetlin_threshold = 8;
-		uint64_t tsetlin_seed = 42;
-		vector<int32_t> tsetlin_actions;
-		uint32_t tsetlin_pt_size = 256;
-		uint32_t tsetlin_pref_degree = 1;
-		float    tsetlin_epsilon = 0.005;
-		uint32_t tsetlin_high_bw_thresh = 3;
-		uint32_t tsetlin_rng_seed = 42;
+	/* Tsetlin Machine Prefetcher */
+	uint32_t tsetlin_num_clauses = 128;
+	uint32_t tsetlin_num_features = 48;
+	uint32_t tsetlin_num_actions = 15;
+	uint32_t tsetlin_num_states = 8;
+	float    tsetlin_s = 3.0;
+	int32_t  tsetlin_threshold = 8;
+	uint64_t tsetlin_seed = 42;
+	vector<int32_t> tsetlin_actions;
+	uint32_t tsetlin_pt_size = 256;
+	uint32_t tsetlin_pref_degree = 1;
+	float    tsetlin_epsilon = 0.005;
+	uint32_t tsetlin_high_bw_thresh = 3;
+	uint32_t tsetlin_rng_seed = 42;
 }
 
 void parse_args(int argc, char *argv[])
