@@ -104,7 +104,7 @@ LearningEngineFeaturewise::LearningEngineFeaturewise(Prefetcher *parent, float a
 	m_actiongen = new std::uniform_int_distribution<int>(0, m_actions-1);
 
 	/* init stats */
-	bzero(&stats, sizeof(stats));
+	memset(&stats, 0, sizeof(stats));
 }
 
 LearningEngineFeaturewise::~LearningEngineFeaturewise()

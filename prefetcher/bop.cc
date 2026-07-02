@@ -22,7 +22,7 @@ void BOPrefetcher::init_knobs()
 
 void BOPrefetcher::init_stats()
 {
-	bzero(&stats, sizeof(stats));
+	memset(&stats, 0, sizeof(stats));
 }
 
 BOPrefetcher::BOPrefetcher(string type) : Prefetcher(type)

@@ -19,7 +19,7 @@ void AMPM::init_knobs()
 
 void AMPM::init_stats()
 {
-    bzero(&stats, sizeof(stats));
+    memset(&stats, 0, sizeof(stats));
 }
 
 void AMPM::print_config()

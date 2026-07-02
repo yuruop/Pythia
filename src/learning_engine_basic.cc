@@ -84,7 +84,7 @@ LearningEngineBasic::LearningEngineBasic(Prefetcher *parent, float alpha, float 
 	m_early_exploration_window = early_exploration_window;
 	m_action_counter = 0;
 
-	bzero(&stats, sizeof(stats));
+	memset(&stats, 0, sizeof(stats));
 }
 
 LearningEngineBasic::~LearningEngineBasic()

@@ -15,7 +15,7 @@ void StridePrefetcher::init_knobs()
 
 void StridePrefetcher::init_stats()
 {
-   bzero(&stats, sizeof(stats));
+   memset(&stats, 0, sizeof(stats));
 }
 
 StridePrefetcher::StridePrefetcher(string type) : Prefetcher(type)

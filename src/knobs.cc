@@ -270,6 +270,21 @@ namespace knob
 	vector<int32_t> le_featurewise_plot_actions;
 	std::string 	le_featurewise_plot_file_name;
 	bool 			le_featurewise_remove_plot_script;
+
+		/* Tsetlin Machine Prefetcher */
+		uint32_t tsetlin_num_clauses = 128;
+		uint32_t tsetlin_num_features = 48;
+		uint32_t tsetlin_num_actions = 15;
+		uint32_t tsetlin_num_states = 8;
+		float    tsetlin_s = 3.0;
+		int32_t  tsetlin_threshold = 8;
+		uint64_t tsetlin_seed = 42;
+		vector<int32_t> tsetlin_actions;
+		uint32_t tsetlin_pt_size = 256;
+		uint32_t tsetlin_pref_degree = 1;
+		float    tsetlin_epsilon = 0.005;
+		uint32_t tsetlin_high_bw_thresh = 3;
+		uint32_t tsetlin_rng_seed = 42;
 }
 
 void parse_args(int argc, char *argv[])
@@ -1239,6 +1254,21 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 	{
 	   knob::le_featurewise_remove_plot_script = !strcmp(value, "true") ? true : false;
 	}
+
+		/* Tsetlin Machine Prefetcher knobs */
+		else if (MATCH("", "tsetlin_num_clauses"))      { knob::tsetlin_num_clauses = atoi(value); }
+		else if (MATCH("", "tsetlin_num_features"))    { knob::tsetlin_num_features = atoi(value); }
+		else if (MATCH("", "tsetlin_num_actions"))    { knob::tsetlin_num_actions = atoi(value); }
+		else if (MATCH("", "tsetlin_num_states"))     { knob::tsetlin_num_states = atoi(value); }
+		else if (MATCH("", "tsetlin_s"))               { knob::tsetlin_s = atof(value); }
+		else if (MATCH("", "tsetlin_threshold"))      { knob::tsetlin_threshold = atoi(value); }
+		else if (MATCH("", "tsetlin_seed"))           { knob::tsetlin_seed = atol(value); }
+		else if (MATCH("", "tsetlin_actions"))        { knob::tsetlin_actions = get_array_int(value); }
+		else if (MATCH("", "tsetlin_pt_size"))        { knob::tsetlin_pt_size = atoi(value); }
+		else if (MATCH("", "tsetlin_pref_degree"))   { knob::tsetlin_pref_degree = atoi(value); }
+		else if (MATCH("", "tsetlin_epsilon"))        { knob::tsetlin_epsilon = atof(value); }
+		else if (MATCH("", "tsetlin_high_bw_thresh")){ knob::tsetlin_high_bw_thresh = atoi(value); }
+		else if (MATCH("", "tsetlin_rng_seed"))       { knob::tsetlin_rng_seed = atoi(value); }
 
     else
     {

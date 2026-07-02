@@ -24,7 +24,7 @@ void SandboxPrefetcher::init_knobs()
 
 void SandboxPrefetcher::init_stats()
 {
-	bzero(&stats, sizeof(stats));
+	memset(&stats, 0, sizeof(stats));
 }
 
 SandboxPrefetcher::SandboxPrefetcher(string type) : Prefetcher(type)

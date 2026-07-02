@@ -18,7 +18,7 @@ void SPP_dev2::init_knobs()
 
 void SPP_dev2::init_stats()
 {
-    bzero(&stats, sizeof(stats));
+    memset(&stats, 0, sizeof(stats));
 }
 
 SPP_dev2::SPP_dev2(std::string type, CACHE *cache) : Prefetcher(type), m_parent_cache(cache)

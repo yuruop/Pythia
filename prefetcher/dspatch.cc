@@ -52,7 +52,7 @@ void DSPatch::init_knobs()
 
 void DSPatch::init_stats()
 {
-	bzero(&stats, sizeof(stats));
+	memset(&stats, 0, sizeof(stats));
 }
 
 DSPatch::DSPatch(string type) : Prefetcher(type)

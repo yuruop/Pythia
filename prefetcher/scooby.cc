@@ -145,7 +145,7 @@ void Scooby::init_knobs()
 
 void Scooby::init_stats()
 {
-	bzero(&stats, sizeof(stats));
+	memset(&stats, 0, sizeof(stats));
 	stats.predict.action_dist.resize(knob::scooby_max_actions, 0);
 	stats.predict.issue_dist.resize(knob::scooby_max_actions, 0);
 	stats.predict.pred_hit.resize(knob::scooby_max_actions, 0);

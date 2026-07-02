@@ -34,7 +34,7 @@ void NextLinePrefetcher::init_knobs()
 
 void NextLinePrefetcher::init_stats()
 {
-	bzero(&stats, sizeof(stats));
+	memset(&stats, 0, sizeof(stats));
 }
 
 void NextLinePrefetcher::print_config()

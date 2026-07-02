@@ -27,7 +27,7 @@ void SMSPrefetcher::init_knobs()
 
 void SMSPrefetcher::init_stats()
 {
-	bzero(&stats, sizeof(stats));
+	memset(&stats, 0, sizeof(stats));
 }
 
 void SMSPrefetcher::print_config()

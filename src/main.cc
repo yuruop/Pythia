@@ -608,12 +608,8 @@ int main(int argc, char** argv)
 {
    for(uint32_t index = 0; index < NUM_CPUS; ++index) generated[index] = false;
 
-	// interrupt signal hanlder
-	struct sigaction sigIntHandler;
-	sigIntHandler.sa_handler = signal_handler;
-	sigemptyset(&sigIntHandler.sa_mask);
-	sigIntHandler.sa_flags = 0;
-	sigaction(SIGINT, &sigIntHandler, NULL);
+	// interrupt signal handler
+	signal(SIGINT, signal_handler);
 
     cout << "*************************************************" << endl
          << "   ChampSim Multicore Out-of-Order Simulator" << endl

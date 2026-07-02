@@ -16,7 +16,7 @@ void Streamer::init_knobs()
 
 void Streamer::init_stats()
 {
-    bzero(&stats, sizeof(stats));
+    memset(&stats, 0, sizeof(stats));
 }
 
 void Streamer::print_config()

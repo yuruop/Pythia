@@ -52,7 +52,7 @@ void POWER7_Pref::init_knobs()
 
 void POWER7_Pref::init_stats()
 {
-    bzero(&stats, sizeof(stats));
+    memset(&stats, 0, sizeof(stats));
 }
 
 void POWER7_Pref::print_config()
