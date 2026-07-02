@@ -205,6 +205,27 @@ private:
     uint32_t  m_pref_degree;
     bool      m_enable_dyn_degree;
 
+    // ---------- Last-offset tracking table (lightweight stride detection) ----------
+    // Simple direct-mapped table: page → last offset seen.
+    // Replaces the hardcoded delta=0 stub with real stride computation.
+    // Storage: 1024 entries × (8B tag + 4B offset + 1B valid) ≈ 13 KB
+    //         (compressible to ~3 KB with 16-bit page tag truncation)
+    static constexpr uint32_t LAST_OFFSET_TABLE_SIZE = 1024;
+    struct LastOffsetEntry {
+        uint64_t page_tag = 0;       // full page number for collision check
+        int32_t  last_offset = -1;   // -1 = never written
+        bool     valid = false;
+    };
+    LastOffsetEntry m_last_offset_table[LAST_OFFSET_TABLE_SIZE];
+
+    // ---------- Temperature encoding bit allocation ----------
+    // Hybrid scheme: temperature-encode ordinal features (offset, delta),
+    // hash-encode categorical features (PC, page, bw_level).
+    // Bit allocation computed from m_num_features at construction time.
+    uint32_t m_temp_offset_bits;     // thermometer bits for block offset
+    uint32_t m_temp_delta_bits;      // thermometer bits for delta magnitude
+    uint32_t m_hash_feature_bits;    // remaining bits for hash encoding
+
     // ---------- RNG for exploration ----------
     std::mt19937                          m_rng;
     std::bernoulli_distribution           m_explore;

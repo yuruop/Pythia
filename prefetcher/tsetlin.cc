@@ -389,6 +389,22 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     // Create the Tsetlin Machine
     m_tm = new TsetlinMachine(tm_cfg);
 
+    // Initialize last-offset tracking table
+    for (uint32_t i = 0; i < LAST_OFFSET_TABLE_SIZE; i++) {
+        m_last_offset_table[i].valid = false;
+        m_last_offset_table[i].page_tag = 0;
+        m_last_offset_table[i].last_offset = -1;
+    }
+
+    // Compute temperature encoding bit allocation (hybrid scheme)
+    // Ordinal features (offset, delta) → temperature encoded (preserves ordering)
+    // Categorical features (PC, page, bw_level) → hash encoded
+    // Assumption: m_num_features >= 17 (8 offset + 8 delta + 1 sign)
+    m_temp_offset_bits = 8;
+    m_temp_delta_bits  = 8;
+    m_hash_feature_bits = m_num_features - m_temp_offset_bits - m_temp_delta_bits - 1;
+    assert(m_hash_feature_bits > 0 && "Need at least 17 features for hybrid encoding");
+
     // Initialize stats (zero-init scalars; vectors resized below)
     m_stats.pt.lookup = 0; m_stats.pt.hit = 0; m_stats.pt.evict = 0; m_stats.pt.insert = 0;
     m_stats.predict.called = 0; m_stats.predict.explore = 0; m_stats.predict.exploit = 0;
@@ -419,28 +435,39 @@ TsetlinPrefetcher::~TsetlinPrefetcher() {
 /* -------------------------------------------------------------------------
  * Feature Generation: Program state → Binary feature vector
  *
- * Uses XOR-based hashing on program context to produce binary features.
- * All operations are integer bitwise → hardware-friendly, no multipliers.
+ * HYBRID ENCODING SCHEME:
+ * - Categorical features (PC, page, bw_level) → XOR-based hashing
+ *   These are discrete IDs; hash encoding is appropriate since there is no
+ *   meaningful ordering — PC 0x400100 and PC 0x400200 are different
+ *   programs, not "larger/smaller" values.
+ * - Ordinal features (offset, delta) → thermometer (temperature) encoding
+ *   These are continuous/numeric with meaningful ordering. Thermometer
+ *   encoding preserves monotonicity, allowing the TM to learn interval
+ *   rules like "offset >= 32" via simple AND clauses.
+ *
+ * Feature layout (48 bits total with default config):
+ *   [0..hash_bits-1]                    : hash(PC, page, bw_level)
+ *   [hash_bits..hash_bits+7]            : thermometer(offset, 8 bits)
+ *   [hash_bits+8..hash_bits+15]         : thermometer(|delta|, 8 bits)
+ *   [hash_bits+16]                      : delta sign (1 = positive/zero)
+ *
+ * All operations are integer bitwise or comparisons → hardware-friendly.
  *
  * Inputs: PC, page, offset (block offset within page), delta (last stride),
  *         bw_level (DRAM bandwidth utilization level)
  * Output: binary features[0..num_features-1]
- *
- * Hash design: splitmix64 variant → good avalanche, fast, all integer ops
  * ------------------------------------------------------------------------- */
 void TsetlinPrefetcher::generate_features(
         uint64_t pc, uint64_t page, uint32_t offset,
         int32_t delta, uint8_t bw_level, int32_t* features)
 {
-    // Combine raw attributes into a base hash input
+    // ---- Part 1: Hash encoding for categorical features ----
+    // PC and page are discrete IDs; bw_level is a coarse bucket (4 levels).
     uint64_t base = pc;
     base ^= (page << 3);
-    base ^= ((uint64_t)offset << 7);
-    base ^= ((uint64_t)(delta & 0xFFF) << 13);
     base ^= ((uint64_t)bw_level << 21);
 
-    for (uint32_t i = 0; i < m_num_features; i++) {
-        // Each feature bit uses a different hash offset
+    for (uint32_t i = 0; i < m_hash_feature_bits; i++) {
         uint64_t h = base ^ ((uint64_t)i * 0x9E3779B97F4A7C15ULL);
 
         // splitmix64 mixing (all integer ops)
@@ -450,6 +477,33 @@ void TsetlinPrefetcher::generate_features(
 
         features[i] = (int32_t)(h & 1);
     }
+
+    // ---- Part 2: Thermometer encoding for block offset [0, 63] ----
+    // threshold_i = i * 63 / 8 for i = 1..8
+    // offset=0  → 00000000, offset=63 → 11111111 (monotonic)
+    // All-integer comparison — a single parallel comparator array in HW.
+    uint32_t feat_base = m_hash_feature_bits;
+    for (uint32_t i = 0; i < m_temp_offset_bits; i++) {
+        int32_t threshold = (int32_t)((i + 1) * 63 / m_temp_offset_bits);
+        features[feat_base + i] = ((int32_t)offset >= threshold) ? 1 : 0;
+    }
+
+    // ---- Part 3: Thermometer encoding for delta magnitude [0, 63] ----
+    // Delta range is naturally [-63, +63] for a 64-block page.
+    // NOTE: the & 0xFFF mask in the old hash scheme is safe because 63
+    //       fits in 6 bits, well within 12. If cross-page prefetching is
+    //       added later, expand the magnitude encoding accordingly.
+    uint32_t delta_mag = (uint32_t)((delta < 0) ? (-delta) : delta);
+    feat_base += m_temp_offset_bits;
+    for (uint32_t i = 0; i < m_temp_delta_bits; i++) {
+        int32_t threshold = (int32_t)((i + 1) * 63 / m_temp_delta_bits);
+        features[feat_base + i] = ((int32_t)delta_mag >= threshold) ? 1 : 0;
+    }
+
+    // ---- Part 4: Delta sign bit ----
+    // 1 = forward/non-negative stride, 0 = backward stride
+    feat_base += m_temp_delta_bits;
+    features[feat_base] = (delta >= 0) ? 1 : 0;
 }
 
 /* -------------------------------------------------------------------------
@@ -498,14 +552,22 @@ void TsetlinPrefetcher::invoke_prefetcher(
         }
     }
 
-    // ---- Step 2: Track last delta (simplified: use address stride) ----
-    // We use a simple delta estimation: for the same page, track last offset
-    // This would be improved with a proper Signature Table in production
+    // ---- Step 2: Compute real delta from last-offset tracking table ----
+    uint32_t lot_idx = (uint32_t)(page & (LAST_OFFSET_TABLE_SIZE - 1));
+    LastOffsetEntry& lot_entry = m_last_offset_table[lot_idx];
+
+    int32_t delta = 0;
+    if (lot_entry.valid && lot_entry.page_tag == page) {
+        // Hit: same page as last access → compute true stride
+        delta = (int32_t)offset - lot_entry.last_offset;
+    }
+    // Always update the table for next access (within-page stride tracking)
+    lot_entry.page_tag = page;
+    lot_entry.last_offset = (int32_t)offset;
+    lot_entry.valid = true;
 
     // ---- Step 3: Generate features ----
     int32_t* features = new int32_t[m_num_features];
-    // Estimate delta from recent history on this page (simplified)
-    int32_t delta = 0;  // Pythia would use ST for this; simplified here
     generate_features(pc, page, offset, delta, m_bw_level, features);
 
     // ---- Step 4: Predict action ----
@@ -531,8 +593,9 @@ void TsetlinPrefetcher::invoke_prefetcher(
     if (m_actions[action_index] != 0) {
         // Issue a prefetch
         int32_t predicted_offset = (int32_t)offset + m_actions[action_index];
+        int32_t max_offset = (1 << (LOG2_PAGE_SIZE - LOG2_BLOCK_SIZE)) - 1;
 
-        if (predicted_offset >= 0 && predicted_offset < 64) {
+        if (predicted_offset >= 0 && predicted_offset <= max_offset) {
             uint64_t pf_addr = (page << LOG2_PAGE_SIZE) +
                                (predicted_offset << LOG2_BLOCK_SIZE);
 
@@ -650,9 +713,14 @@ int32_t TsetlinPrefetcher::compute_reward(
     bool high_bw = is_high_bw();
 
     switch (reward_type) {
-        case REWARD_TIMELY:    return high_bw ? 20 : 20;
-        case REWARD_UNTIMELY:  return high_bw ? 12 : 12;
-        case REWARD_INCORRECT: return high_bw ? -14 : -8;
+        // High BW: good prefetches are more valuable (saved BW in a tight channel)
+        case REWARD_TIMELY:    return high_bw ? 25 : 20;
+        // High BW: late prefetches are more harmful (wasted BW when it's scarce)
+        case REWARD_UNTIMELY:  return high_bw ?  6 : 10;
+        // High BW: wrong prefetches waste scarce BW → penalize harder
+        case REWARD_INCORRECT: return high_bw ? -16 : -8;
+        // High BW: no-prefetch decision that aged out → small penalty
+        // (being conservative is less harmful when BW is tight)
         case REWARD_NONE:      return high_bw ? -2  : -4;
         default:               return 0;
     }
@@ -728,12 +796,16 @@ const char* TsetlinPrefetcher::get_reward_type_name(int32_t type) const {
 void TsetlinPrefetcher::print_config() {
     cout << "=== Tsetlin Prefetcher Configuration ===" << endl;
     cout << "tsetlin_num_features " << m_num_features << endl;
+    cout << "  - hash features    " << m_hash_feature_bits << " (PC, page, bw_level)" << endl;
+    cout << "  - offset thermometer " << m_temp_offset_bits << " bits" << endl;
+    cout << "  - delta thermometer  " << m_temp_delta_bits << " bits (+ 1 sign bit)" << endl;
     cout << "tsetlin_num_actions " << m_max_actions << endl;
     cout << "tsetlin_actions ";
     for (size_t i = 0; i < m_actions.size(); i++) {
         cout << m_actions[i] << (i < m_actions.size()-1 ? "," : "");
     }
     cout << endl;
+    cout << "tsetlin_last_offset_table " << LAST_OFFSET_TABLE_SIZE << " entries" << endl;
     cout << "tsetlin_pt_size " << m_pt_size << endl;
     cout << "tsetlin_pref_degree " << m_pref_degree << endl;
     cout << "tsetlin_high_bw_thresh " << (int)m_high_bw_thresh << endl;
