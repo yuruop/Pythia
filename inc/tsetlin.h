@@ -242,6 +242,8 @@ private:
             uint64_t lookup;
             uint64_t hit;
             uint64_t evict;
+            uint64_t evict_filled;    // evicted with is_filled=true → PT too small
+            uint64_t evict_unfilled;  // evicted with is_filled=false → likely bad prefetch
             uint64_t insert;
         } pt;
 

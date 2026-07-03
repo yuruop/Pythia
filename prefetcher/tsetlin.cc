@@ -669,6 +669,11 @@ void TsetlinPrefetcher::invoke_prefetcher(
                     TMPrefetchTrackerEntry* victim = m_pt.front();
                     m_pt.pop_front();
                     m_stats.pt.evict++;
+                    // Track PT pressure: filled=true means the data arrived
+                    // but was evicted before the demand access → PT undersized.
+                    // unfilled means the data never arrived → likely a bad prefetch.
+                    if (victim->is_filled) { m_stats.pt.evict_filled++; }
+                    else                   { m_stats.pt.evict_unfilled++; }
 
                     // Compute reward for evicted entry (incorrect or no_pref)
                     if (!victim->has_reward) {
@@ -715,6 +720,8 @@ void TsetlinPrefetcher::invoke_prefetcher(
                 TMPrefetchTrackerEntry* victim = m_pt.front();
                 m_pt.pop_front();
                 m_stats.pt.evict++;
+                if (victim->is_filled) { m_stats.pt.evict_filled++; }
+                else                   { m_stats.pt.evict_unfilled++; }
 
                 if (!victim->has_reward) {
                     // Out-of-bounds action → always incorrect (no useful prefetch)
@@ -739,6 +746,8 @@ void TsetlinPrefetcher::invoke_prefetcher(
             TMPrefetchTrackerEntry* victim = m_pt.front();
             m_pt.pop_front();
             m_stats.pt.evict++;
+            if (victim->is_filled) { m_stats.pt.evict_filled++; }
+            else                   { m_stats.pt.evict_unfilled++; }
 
             if (!victim->has_reward) {
                 victim->reward_type = REWARD_NONE;
@@ -1040,6 +1049,8 @@ void TsetlinPrefetcher::dump_stats() {
     cout << "tsetlin_pt_lookup " << m_stats.pt.lookup << endl;
     cout << "tsetlin_pt_hit " << m_stats.pt.hit << endl;
     cout << "tsetlin_pt_evict " << m_stats.pt.evict << endl;
+    cout << "tsetlin_pt_evict_filled " << m_stats.pt.evict_filled << endl;
+    cout << "tsetlin_pt_evict_unfilled " << m_stats.pt.evict_unfilled << endl;
     cout << "tsetlin_pt_insert " << m_stats.pt.insert << endl;
     cout << endl;
 
