@@ -285,6 +285,11 @@ namespace knob
 	float    tsetlin_epsilon = 0.005;
 	uint32_t tsetlin_high_bw_thresh = 3;
 	uint32_t tsetlin_rng_seed = 42;
+	bool     tsetlin_enable_dyn_degree = false;
+	vector<int32_t> tsetlin_dyn_deg_thresh = {2, 5, 7};
+	vector<int32_t> tsetlin_dyn_deg_values = {1, 2, 4, 6};
+	vector<int32_t> tsetlin_dyn_deg_thresh_hbw = {2, 5, 7};
+	vector<int32_t> tsetlin_dyn_deg_values_hbw = {1, 1, 2, 4};
 
 	/* Contextual Bandit (LinUCB) Prefetcher */
 	uint32_t linucb_num_actions = 15;
@@ -298,6 +303,11 @@ namespace knob
 	float    linucb_epsilon = 0.005;
 	uint32_t linucb_high_bw_thresh = 3;
 	uint32_t linucb_rng_seed = 42;
+	bool     linucb_enable_dyn_degree = false;
+	vector<int32_t> linucb_dyn_deg_thresh = {10, 30, 60};
+	vector<int32_t> linucb_dyn_deg_values = {1, 2, 4, 6};
+	vector<int32_t> linucb_dyn_deg_thresh_hbw = {10, 30, 60};
+	vector<int32_t> linucb_dyn_deg_values_hbw = {1, 1, 2, 4};
 }
 
 void parse_args(int argc, char *argv[])
@@ -1282,6 +1292,11 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "tsetlin_epsilon"))        { knob::tsetlin_epsilon = atof(value); }
 		else if (MATCH("", "tsetlin_high_bw_thresh")){ knob::tsetlin_high_bw_thresh = atoi(value); }
 		else if (MATCH("", "tsetlin_rng_seed"))       { knob::tsetlin_rng_seed = atoi(value); }
+		else if (MATCH("", "tsetlin_enable_dyn_degree"))     { knob::tsetlin_enable_dyn_degree = (bool)atoi(value); }
+		else if (MATCH("", "tsetlin_dyn_deg_thresh"))        { knob::tsetlin_dyn_deg_thresh = get_array_int(value); }
+		else if (MATCH("", "tsetlin_dyn_deg_values"))        { knob::tsetlin_dyn_deg_values = get_array_int(value); }
+		else if (MATCH("", "tsetlin_dyn_deg_thresh_hbw"))    { knob::tsetlin_dyn_deg_thresh_hbw = get_array_int(value); }
+		else if (MATCH("", "tsetlin_dyn_deg_values_hbw"))    { knob::tsetlin_dyn_deg_values_hbw = get_array_int(value); }
 
 		/* Contextual Bandit (LinUCB) Prefetcher knobs */
 		else if (MATCH("", "linucb_num_actions"))    { knob::linucb_num_actions = atoi(value); }
@@ -1295,6 +1310,11 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "linucb_epsilon"))         { knob::linucb_epsilon = atof(value); }
 		else if (MATCH("", "linucb_high_bw_thresh")) { knob::linucb_high_bw_thresh = atoi(value); }
 		else if (MATCH("", "linucb_rng_seed"))        { knob::linucb_rng_seed = atoi(value); }
+		else if (MATCH("", "linucb_enable_dyn_degree"))     { knob::linucb_enable_dyn_degree = (bool)atoi(value); }
+		else if (MATCH("", "linucb_dyn_deg_thresh"))        { knob::linucb_dyn_deg_thresh = get_array_int(value); }
+		else if (MATCH("", "linucb_dyn_deg_values"))        { knob::linucb_dyn_deg_values = get_array_int(value); }
+		else if (MATCH("", "linucb_dyn_deg_thresh_hbw"))    { knob::linucb_dyn_deg_thresh_hbw = get_array_int(value); }
+		else if (MATCH("", "linucb_dyn_deg_values_hbw"))    { knob::linucb_dyn_deg_values_hbw = get_array_int(value); }
 
     else
     {

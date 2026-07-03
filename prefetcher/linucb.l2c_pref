@@ -31,6 +31,11 @@ namespace knob {
     extern float    linucb_epsilon;
     extern uint32_t linucb_high_bw_thresh;
     extern uint32_t linucb_rng_seed;
+    extern bool     linucb_enable_dyn_degree;
+    extern vector<int32_t> linucb_dyn_deg_thresh;
+    extern vector<int32_t> linucb_dyn_deg_values;
+    extern vector<int32_t> linucb_dyn_deg_thresh_hbw;
+    extern vector<int32_t> linucb_dyn_deg_values_hbw;
 }
 
 // ---- Global LinUCB configuration ----
@@ -78,7 +83,12 @@ void CACHE::l2c_prefetcher_initialize()
         knob::linucb_epsilon,
         (uint8_t)knob::linucb_high_bw_thresh,
         knob::linucb_rng_seed,
-        "linucb"
+        "linucb",
+        knob::linucb_enable_dyn_degree,
+        knob::linucb_dyn_deg_thresh,
+        knob::linucb_dyn_deg_values,
+        knob::linucb_dyn_deg_thresh_hbw,
+        knob::linucb_dyn_deg_values_hbw
     );
 
     // Storage estimate

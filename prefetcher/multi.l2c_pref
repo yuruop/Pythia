@@ -41,6 +41,11 @@ namespace knob
 	extern float    tsetlin_epsilon;
 	extern uint32_t tsetlin_high_bw_thresh;
 	extern uint32_t tsetlin_rng_seed;
+	extern bool     tsetlin_enable_dyn_degree;
+	extern vector<int32_t> tsetlin_dyn_deg_thresh;
+	extern vector<int32_t> tsetlin_dyn_deg_values;
+	extern vector<int32_t> tsetlin_dyn_deg_thresh_hbw;
+	extern vector<int32_t> tsetlin_dyn_deg_values_hbw;
 	/* Contextual Bandit (LinUCB) Prefetcher knobs */
 	extern uint32_t linucb_num_actions;
 	extern uint32_t linucb_num_features;
@@ -53,6 +58,11 @@ namespace knob
 	extern float    linucb_epsilon;
 	extern uint32_t linucb_high_bw_thresh;
 	extern uint32_t linucb_rng_seed;
+	extern bool     linucb_enable_dyn_degree;
+	extern vector<int32_t> linucb_dyn_deg_thresh;
+	extern vector<int32_t> linucb_dyn_deg_values;
+	extern vector<int32_t> linucb_dyn_deg_thresh_hbw;
+	extern vector<int32_t> linucb_dyn_deg_values_hbw;
 }
 
 // vector<Prefetcher*> prefetchers;
@@ -174,7 +184,12 @@ void CACHE::l2c_prefetcher_initialize()
 				tm_cfg, actions,
 				knob::tsetlin_pt_size, knob::tsetlin_pref_degree,
 				knob::tsetlin_epsilon, (uint8_t)knob::tsetlin_high_bw_thresh,
-				knob::tsetlin_rng_seed, knob::l2c_prefetcher_types[index]);
+				knob::tsetlin_rng_seed, knob::l2c_prefetcher_types[index],
+				knob::tsetlin_enable_dyn_degree,
+				knob::tsetlin_dyn_deg_thresh,
+				knob::tsetlin_dyn_deg_values,
+				knob::tsetlin_dyn_deg_thresh_hbw,
+				knob::tsetlin_dyn_deg_values_hbw);
 			prefetchers.push_back(pref_tsetlin);
 		}
 		else if (!knob::l2c_prefetcher_types[index].compare("linucb"))
@@ -194,7 +209,12 @@ void CACHE::l2c_prefetcher_initialize()
 				cb_cfg, actions,
 			knob::linucb_pt_size, knob::linucb_pref_degree,
 			knob::linucb_epsilon, (uint8_t)knob::linucb_high_bw_thresh,
-			knob::linucb_rng_seed, knob::l2c_prefetcher_types[index]);
+			knob::linucb_rng_seed, knob::l2c_prefetcher_types[index],
+			knob::linucb_enable_dyn_degree,
+			knob::linucb_dyn_deg_thresh,
+			knob::linucb_dyn_deg_values,
+			knob::linucb_dyn_deg_thresh_hbw,
+			knob::linucb_dyn_deg_values_hbw);
 			prefetchers.push_back(pref_linucb);
 		}
 		else

@@ -230,6 +230,15 @@ float LinUCB::get_theta(uint32_t action, uint32_t feat) const {
     return m_theta[action * m_num_features + feat];
 }
 
+/* -------------------------------------------------------------------------
+ * Expected reward (exploitation term only, no UCB bonus).
+ * Used as a confidence proxy for dynamic degree selection.
+ * ------------------------------------------------------------------------- */
+float LinUCB::get_expected_reward(const float* features, uint32_t action) const {
+    const float* theta_i = m_theta + action * m_num_features;
+    return dot(theta_i, features);
+}
+
 float LinUCB::get_ucb_bonus(const float* features, uint32_t action) const {
     uint32_t d = m_num_features;
     const float* A_inv_i = m_A_inv + action * d * d;
@@ -295,7 +304,12 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
         const vector<int32_t>& actions,
         uint32_t pt_size, uint32_t pref_degree,
         float epsilon, uint8_t high_bw_thresh,
-        uint64_t seed, string type)
+        uint64_t seed, string type,
+        bool enable_dyn_degree,
+        const vector<int32_t>& dyn_deg_thresh,
+        const vector<int32_t>& dyn_deg_values,
+        const vector<int32_t>& dyn_deg_thresh_hbw,
+        const vector<int32_t>& dyn_deg_values_hbw)
     : Prefetcher(type)
     , m_num_features(cb_cfg.num_features)
     , m_actions(actions)
@@ -304,6 +318,11 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     , m_bw_level(0)
     , m_high_bw_thresh(high_bw_thresh)
     , m_pref_degree(pref_degree)
+    , m_enable_dyn_degree(enable_dyn_degree)
+    , m_dyn_deg_thresh(dyn_deg_thresh)
+    , m_dyn_deg_values(dyn_deg_values)
+    , m_dyn_deg_thresh_hbw(dyn_deg_thresh_hbw)
+    , m_dyn_deg_values_hbw(dyn_deg_values_hbw)
     , m_epsilon(epsilon)
     , m_rng(seed)
     , m_explore(epsilon)
@@ -333,6 +352,7 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     m_stats.pt.lookup = 0; m_stats.pt.hit = 0; m_stats.pt.evict = 0; m_stats.pt.insert = 0;
     m_stats.predict.called = 0; m_stats.predict.explore = 0; m_stats.predict.exploit = 0;
     m_stats.predict.out_of_bounds = 0; m_stats.predict.predicted = 0;
+    m_stats.predict.multi_deg_called = 0; m_stats.predict.multi_deg_issued = 0;
     m_stats.reward.called = 0; m_stats.reward.pt_not_found = 0; m_stats.reward.pt_found = 0;
     m_stats.reward.correct_timely = 0; m_stats.reward.correct_untimely = 0;
     m_stats.reward.incorrect = 0; m_stats.reward.no_pref = 0;
@@ -342,6 +362,10 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
 
     m_stats.predict.action_dist.resize(m_max_actions, 0);
     m_stats.predict.issue_dist.resize(m_max_actions, 0);
+    // Dynamic degree histograms: size = max possible degree + 1 (index by degree)
+    uint32_t max_deg = m_pref_degree > 0 ? m_pref_degree : 6;
+    m_stats.predict.deg_histogram.resize(max_deg + 1, 0);
+    m_stats.predict.multi_deg_histogram.resize(max_deg + 1, 0);
     for (int i = 0; i < NUM_REWARD_TYPES; i++) {
         m_stats.reward.reward_per_action[i].resize(m_max_actions, 0);
     }
@@ -572,6 +596,18 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
                     }
                     delete victim;
                 }
+
+                // ---- Dynamic multi-degree prefetch ----
+                // If enabled, issue extra speculative prefetches based on
+                // LinUCB expected reward confidence. Only the base (degree-1)
+                // prefetch is PT-tracked; extra prefetches are speculative.
+                uint32_t dyn_degree = get_dyn_pref_degree(features, action_index);
+                m_stats.predict.deg_histogram[dyn_degree]++;
+                if (dyn_degree > 1) {
+                    gen_multi_degree_pref(page, offset,
+                                          m_actions[action_index],
+                                          dyn_degree, pref_addr);
+                }
             }
         } else {
             // Out-of-bounds: the chosen action would cross a page boundary.
@@ -769,6 +805,94 @@ bool ContextualBanditPrefetcher::is_high_bw() const {
     return m_bw_level >= m_high_bw_thresh;
 }
 
+/* -------------------------------------------------------------------------
+ * Dynamic prefetch degree based on LinUCB expected reward confidence.
+ *
+ * Uses |expected_reward| as a confidence proxy — higher magnitude means the
+ * linear model is more certain about this action's value in this context.
+ *
+ * Uses separate threshold/degree lists for normal vs high-BW operation.
+ * Falls back to degree=1 if no thresholds are configured.
+ * ------------------------------------------------------------------------- */
+uint32_t ContextualBanditPrefetcher::get_dyn_pref_degree(
+        const float* features, uint32_t action_index)
+{
+    if (!m_enable_dyn_degree) {
+        return m_pref_degree;
+    }
+
+    // action 0 = "no prefetch" → degree expansion is meaningless.
+    // Defensive guard — the caller (invoke_prefetcher) already skips this path,
+    // but future callers might not.
+    if (action_index < m_max_actions && m_actions[action_index] == 0) {
+        return 1;
+    }
+
+    float expected = m_linucb->get_expected_reward(features, action_index);
+    // Clamp to a reasonable range: [0, 1].  In early training (before θ
+    // converges), expected_reward can oscillate wildly.  Clamping prevents a
+    // single noisy prediction from triggering degree=6 on garbage features.
+    // Upper bound of 1.0 is a sensible maximum for the normalized feature
+    // space used by this prefetcher (all features in [-1, 1] or [0, 1]).
+    float conf = (expected < 0.0f) ? -expected : expected;  // abs()
+    if (conf < 0.0f) conf = 0.0f;
+    if (conf > 1.0f) conf = 1.0f;
+
+    const vector<int32_t>& thresholds = is_high_bw()
+        ? m_dyn_deg_thresh_hbw : m_dyn_deg_thresh;
+    const vector<int32_t>& degrees = is_high_bw()
+        ? m_dyn_deg_values_hbw : m_dyn_deg_values;
+
+    if (thresholds.empty() || degrees.empty()) {
+        return 1;  // no thresholds configured → conservative
+    }
+
+    // Thresholds are stored as integers but represent float confidence levels
+    // multiplied by 100 (e.g., threshold=30 means conf=0.30).
+    int32_t conf_scaled = (int32_t)(conf * 100.0f);
+
+    for (size_t i = 0; i < thresholds.size() && i < degrees.size(); i++) {
+        if (conf_scaled <= thresholds[i]) {
+            return (uint32_t)degrees[i];
+        }
+    }
+
+    // Confidence exceeds all thresholds → use the highest degree
+    return (uint32_t)degrees.back();
+}
+
+/* -------------------------------------------------------------------------
+ * Generate additional prefetch addresses for multi-degree prefetching.
+ *
+ * Issues extra speculative prefetches at offset + degree * action_delta
+ * for degree = 2, 3, ..., pref_degree. Only the base (degree-1) prefetch
+ * is PT-tracked; extra prefetches are speculative (same as Pythia).
+ * ------------------------------------------------------------------------- */
+void ContextualBanditPrefetcher::gen_multi_degree_pref(
+        uint64_t page, uint32_t offset,
+        int32_t action_delta, uint32_t degree,
+        vector<uint64_t>& pref_addr)
+{
+    m_stats.predict.multi_deg_called++;
+
+    if (action_delta == 0 || degree <= 1) {
+        return;
+    }
+
+    int32_t max_offset = (1 << (LOG2_PAGE_SIZE - LOG2_BLOCK_SIZE)) - 1;
+
+    for (uint32_t d = 2; d <= degree; d++) {
+        int32_t predicted_offset = (int32_t)offset + (int32_t)d * action_delta;
+        if (predicted_offset >= 0 && predicted_offset <= max_offset) {
+            uint64_t addr = (page << LOG2_PAGE_SIZE)
+                          + ((uint64_t)predicted_offset << LOG2_BLOCK_SIZE);
+            pref_addr.push_back(addr);
+            m_stats.predict.multi_deg_issued++;
+            m_stats.predict.multi_deg_histogram[d]++;
+        }
+    }
+}
+
 const char* ContextualBanditPrefetcher::get_reward_type_name(int32_t type) const {
     switch (type) {
         case REWARD_TIMELY:    return "timely";
@@ -793,6 +917,25 @@ void ContextualBanditPrefetcher::print_config() {
     cout << endl;
     cout << "linucb_pt_size " << m_pt_size << endl;
     cout << "linucb_pref_degree " << m_pref_degree << endl;
+    cout << "linucb_enable_dyn_degree " << (m_enable_dyn_degree ? "true" : "false") << endl;
+    if (m_enable_dyn_degree) {
+        cout << "linucb_dyn_deg_thresh ";
+        for (size_t i = 0; i < m_dyn_deg_thresh.size(); i++)
+            cout << m_dyn_deg_thresh[i] << (i < m_dyn_deg_thresh.size()-1 ? "," : "");
+        cout << endl;
+        cout << "linucb_dyn_deg_values ";
+        for (size_t i = 0; i < m_dyn_deg_values.size(); i++)
+            cout << m_dyn_deg_values[i] << (i < m_dyn_deg_values.size()-1 ? "," : "");
+        cout << endl;
+        cout << "linucb_dyn_deg_thresh_hbw ";
+        for (size_t i = 0; i < m_dyn_deg_thresh_hbw.size(); i++)
+            cout << m_dyn_deg_thresh_hbw[i] << (i < m_dyn_deg_thresh_hbw.size()-1 ? "," : "");
+        cout << endl;
+        cout << "linucb_dyn_deg_values_hbw ";
+        for (size_t i = 0; i < m_dyn_deg_values_hbw.size(); i++)
+            cout << m_dyn_deg_values_hbw[i] << (i < m_dyn_deg_values_hbw.size()-1 ? "," : "");
+        cout << endl;
+    }
     cout << "linucb_high_bw_thresh " << (int)m_high_bw_thresh << endl;
     cout << "linucb_epsilon " << m_epsilon << endl;
     cout << endl;
@@ -813,12 +956,20 @@ void ContextualBanditPrefetcher::dump_stats() {
     cout << "linucb_predict_exploit " << m_stats.predict.exploit << endl;
     cout << "linucb_predict_out_of_bounds " << m_stats.predict.out_of_bounds << endl;
     cout << "linucb_predict_predicted " << m_stats.predict.predicted << endl;
+    cout << "linucb_predict_multi_deg_called " << m_stats.predict.multi_deg_called << endl;
+    cout << "linucb_predict_multi_deg_issued " << m_stats.predict.multi_deg_issued << endl;
 
     for (uint32_t i = 0; i < m_max_actions; i++) {
         cout << "linucb_predict_action_" << m_actions[i] << " "
              << m_stats.predict.action_dist[i] << endl;
         cout << "linucb_predict_issue_action_" << m_actions[i] << " "
              << m_stats.predict.issue_dist[i] << endl;
+    }
+    for (size_t d = 1; d < m_stats.predict.deg_histogram.size(); d++) {
+        cout << "linucb_degree_" << d << " " << m_stats.predict.deg_histogram[d] << endl;
+    }
+    for (size_t d = 2; d < m_stats.predict.multi_deg_histogram.size(); d++) {
+        cout << "linucb_multi_deg_" << d << " " << m_stats.predict.multi_deg_histogram[d] << endl;
     }
     cout << endl;
 

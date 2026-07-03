@@ -33,6 +33,11 @@ namespace knob {
     extern float    tsetlin_epsilon;
     extern uint32_t tsetlin_high_bw_thresh;
     extern uint32_t tsetlin_rng_seed;
+    extern bool     tsetlin_enable_dyn_degree;
+    extern vector<int32_t> tsetlin_dyn_deg_thresh;
+    extern vector<int32_t> tsetlin_dyn_deg_values;
+    extern vector<int32_t> tsetlin_dyn_deg_thresh_hbw;
+    extern vector<int32_t> tsetlin_dyn_deg_values_hbw;
 }
 
 // ---- Global TM configuration (hardware-friendly defaults, override via .ini) ----
@@ -82,7 +87,12 @@ void CACHE::l2c_prefetcher_initialize()
         knob::tsetlin_epsilon,
         (uint8_t)knob::tsetlin_high_bw_thresh,
         knob::tsetlin_rng_seed,
-        "tsetlin"
+        "tsetlin",
+        knob::tsetlin_enable_dyn_degree,
+        knob::tsetlin_dyn_deg_thresh,
+        knob::tsetlin_dyn_deg_values,
+        knob::tsetlin_dyn_deg_thresh_hbw,
+        knob::tsetlin_dyn_deg_values_hbw
     );
 
     cout << "  TM: " << tm_cfg.num_clauses << " clauses, "

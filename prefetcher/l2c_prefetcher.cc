@@ -1,12 +1,12 @@
 /*
- * Contextual Bandit (LinUCB) Prefetcher - L2 Cache Wrapper
+ * Tsetlin Prefetcher - L2 Cache Wrapper
  *
- * Integrates the LinUCB contextual bandit prefetcher into ChampSim's CACHE
- * class for L2 cache prefetching. This wrapper is copied to l2c_prefetcher.cc
+ * Integrates the Tsetlin Machine prefetcher into ChampSim's CACHE class
+ * for L2 cache prefetching. This wrapper is copied to l2c_prefetcher.cc
  * during the build process.
  *
  * Build usage:
- *   ./build_champsim.sh no linucb no 1
+ *   ./build_champsim.sh no tsetlin no 1
  */
 
 #include <string>
@@ -14,48 +14,57 @@
 #include <algorithm>
 #include "cache.h"
 #include "prefetcher.h"
-#include "linucb.h"
+#include "tsetlin.h"
 
 using namespace std;
 
-// ---- Knob overrides (from config/linucb.ini) ----
+// ---- Knob overrides (from config/tsetlin.ini) ----
 namespace knob {
-    extern uint32_t linucb_num_actions;
-    extern uint32_t linucb_num_features;
-    extern float    linucb_alpha;
-    extern float    linucb_lambda;
-    extern uint64_t linucb_seed;
-    extern vector<int32_t> linucb_actions;
-    extern uint32_t linucb_pt_size;
-    extern uint32_t linucb_pref_degree;
-    extern float    linucb_epsilon;
-    extern uint32_t linucb_high_bw_thresh;
-    extern uint32_t linucb_rng_seed;
+    extern uint32_t tsetlin_num_clauses;
+    extern uint32_t tsetlin_num_features;
+    extern uint32_t tsetlin_num_actions;
+    extern uint32_t tsetlin_num_states;
+    extern float    tsetlin_s;
+    extern int32_t  tsetlin_threshold;
+    extern uint64_t tsetlin_seed;
+    extern vector<int32_t> tsetlin_actions;
+    extern uint32_t tsetlin_pt_size;
+    extern uint32_t tsetlin_pref_degree;
+    extern float    tsetlin_epsilon;
+    extern uint32_t tsetlin_high_bw_thresh;
+    extern uint32_t tsetlin_rng_seed;
+    extern bool     tsetlin_enable_dyn_degree;
+    extern vector<int32_t> tsetlin_dyn_deg_thresh;
+    extern vector<int32_t> tsetlin_dyn_deg_values;
+    extern vector<int32_t> tsetlin_dyn_deg_thresh_hbw;
+    extern vector<int32_t> tsetlin_dyn_deg_values_hbw;
 }
 
-// ---- Global LinUCB configuration ----
+// ---- Global TM configuration (hardware-friendly defaults, override via .ini) ----
 
-static LinUCB::Config make_cb_config() {
-    LinUCB::Config cfg;
-    cfg.num_actions  = knob::linucb_num_actions;
-    cfg.num_features = knob::linucb_num_features;
-    cfg.alpha        = knob::linucb_alpha;
-    cfg.lambda_      = knob::linucb_lambda;
-    cfg.seed         = knob::linucb_seed;
+static TsetlinMachine::Config make_tm_config() {
+    TsetlinMachine::Config cfg;
+    cfg.num_clauses   = knob::tsetlin_num_clauses;
+    cfg.num_features  = knob::tsetlin_num_features;
+    cfg.num_actions   = knob::tsetlin_num_actions;
+    cfg.num_states    = knob::tsetlin_num_states;
+    cfg.s             = knob::tsetlin_s;
+    cfg.threshold     = knob::tsetlin_threshold;
+    cfg.seed          = knob::tsetlin_seed;
     return cfg;
 }
 
-// ---- Action space ----
+// ---- Action space (uses global knob if populated, otherwise default) ----
 static vector<int32_t> make_actions() {
-    if (!knob::linucb_actions.empty()) {
-        return knob::linucb_actions;
+    if (!knob::tsetlin_actions.empty()) {
+        return knob::tsetlin_actions;
     }
     // Default action space (same as Pythia's)
     return {1, 3, 4, 5, 10, 11, 12, 22, 23, 30, 32, -1, -3, -6, 0};
 }
 
 // ---- Singleton prefetcher instance ----
-static ContextualBanditPrefetcher* linucb_pref = nullptr;
+static TsetlinPrefetcher* tsetlin_pref = nullptr;
 
 /* =========================================================================
  * CACHE Integration Methods
@@ -63,55 +72,52 @@ static ContextualBanditPrefetcher* linucb_pref = nullptr;
 
 void CACHE::l2c_prefetcher_initialize()
 {
-    cout << "Initializing Contextual Bandit (LinUCB) L2C Prefetcher..." << endl;
+    cout << "Initializing Tsetlin Machine L2C Prefetcher..." << endl;
 
-    LinUCB::Config cb_cfg = make_cb_config();
+    TsetlinMachine::Config tm_cfg = make_tm_config();
     vector<int32_t> actions = make_actions();
 
     // Update num_actions from the actual action vector
-    cb_cfg.num_actions = (uint32_t)actions.size();
+    tm_cfg.num_actions = (uint32_t)actions.size();
 
-    linucb_pref = new ContextualBanditPrefetcher(
-        cb_cfg, actions,
-        knob::linucb_pt_size,
-        knob::linucb_pref_degree,
-        knob::linucb_epsilon,
-        (uint8_t)knob::linucb_high_bw_thresh,
-        knob::linucb_rng_seed,
-        "linucb"
+    tsetlin_pref = new TsetlinPrefetcher(
+        tm_cfg, actions,
+        knob::tsetlin_pt_size,
+        knob::tsetlin_pref_degree,
+        knob::tsetlin_epsilon,
+        (uint8_t)knob::tsetlin_high_bw_thresh,
+        knob::tsetlin_rng_seed,
+        "tsetlin",
+        knob::tsetlin_enable_dyn_degree,
+        knob::tsetlin_dyn_deg_thresh,
+        knob::tsetlin_dyn_deg_values,
+        knob::tsetlin_dyn_deg_thresh_hbw,
+        knob::tsetlin_dyn_deg_values_hbw
     );
 
-    // Storage estimate
-    uint32_t d = cb_cfg.num_features;
-    uint32_t k = cb_cfg.num_actions;
-    float mat_kb = (k * d * d * sizeof(float)) / 1024.0f;
-    float vec_kb = (k * d * 2 * sizeof(float)) / 1024.0f;  // theta + b
-    float pt_kb = (knob::linucb_pt_size * 10) / 1024.0f;
-
-    cout << "  LinUCB: " << d << " features, "
-         << k << " actions, "
-         << "alpha=" << cb_cfg.alpha << ", "
-         << "lambda=" << cb_cfg.lambda_ << endl;
+    cout << "  TM: " << tm_cfg.num_clauses << " clauses, "
+         << tm_cfg.num_features << " features, "
+         << tm_cfg.num_actions << " actions, "
+         << (tm_cfg.num_states * 2) << " states/TA" << endl;
     cout << "  Storage: ~"
-         << (mat_kb + vec_kb) << " KB (A_inv + theta/b)"
-         << " + ~" << pt_kb << " KB (PT)"
-         << " = ~" << (mat_kb + vec_kb + pt_kb) << " KB total" << endl;
+         << (tm_cfg.num_clauses * tm_cfg.num_features * 2 * 4 / 8 / 1024.0)
+         << " KB (TA state) + PT overhead" << endl;
     cout << "  Actions: ";
     for (size_t i = 0; i < actions.size(); i++) {
         cout << actions[i] << (i < actions.size()-1 ? "," : "");
     }
     cout << endl;
-    cout << "Contextual Bandit L2C Prefetcher ready." << endl;
+    cout << "Tsetlin L2C Prefetcher ready." << endl;
 }
 
 uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip,
                                         uint8_t cache_hit, uint8_t type,
                                         uint32_t metadata_in)
 {
-    if (linucb_pref == nullptr) return metadata_in;
+    if (tsetlin_pref == nullptr) return metadata_in;
 
     vector<uint64_t> pref_addr;
-    linucb_pref->invoke_prefetcher(ip, addr, cache_hit, type, pref_addr);
+    tsetlin_pref->invoke_prefetcher(ip, addr, cache_hit, type, pref_addr);
 
     // Issue prefetch requests to L2
     for (uint64_t pf_addr : pref_addr) {
@@ -126,8 +132,8 @@ uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set,
                                            uint64_t evicted_addr,
                                            uint32_t metadata_in)
 {
-    if (linucb_pref != nullptr && prefetch) {
-        linucb_pref->register_fill(addr);
+    if (tsetlin_pref != nullptr && prefetch) {
+        tsetlin_pref->register_fill(addr);
     }
     return metadata_in;
 }
@@ -135,43 +141,43 @@ uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set,
 uint32_t CACHE::l2c_prefetcher_prefetch_hit(uint64_t addr, uint64_t ip,
                                              uint32_t metadata_in)
 {
-    if (linucb_pref != nullptr) {
-        linucb_pref->register_prefetch_hit(addr);
+    if (tsetlin_pref != nullptr) {
+        tsetlin_pref->register_prefetch_hit(addr);
     }
     return metadata_in;
 }
 
 void CACHE::l2c_prefetcher_final_stats()
 {
-    if (linucb_pref != nullptr) {
-        linucb_pref->dump_stats();
+    if (tsetlin_pref != nullptr) {
+        tsetlin_pref->dump_stats();
     }
 }
 
 void CACHE::l2c_prefetcher_print_config()
 {
-    if (linucb_pref != nullptr) {
-        linucb_pref->print_config();
+    if (tsetlin_pref != nullptr) {
+        tsetlin_pref->print_config();
     }
 }
 
 void CACHE::l2c_prefetcher_broadcast_bw(uint8_t bw_level)
 {
-    if (linucb_pref != nullptr) {
-        linucb_pref->update_bw(bw_level);
+    if (tsetlin_pref != nullptr) {
+        tsetlin_pref->update_bw(bw_level);
     }
 }
 
 void CACHE::l2c_prefetcher_broadcast_ipc(uint8_t ipc)
 {
-    if (linucb_pref != nullptr) {
-        linucb_pref->update_ipc(ipc);
+    if (tsetlin_pref != nullptr) {
+        tsetlin_pref->update_ipc(ipc);
     }
 }
 
 void CACHE::l2c_prefetcher_broadcast_acc(uint32_t acc_level)
 {
-    if (linucb_pref != nullptr) {
-        linucb_pref->update_acc(acc_level);
+    if (tsetlin_pref != nullptr) {
+        tsetlin_pref->update_acc(acc_level);
     }
 }

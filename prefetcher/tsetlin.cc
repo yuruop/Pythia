@@ -398,7 +398,12 @@ TsetlinPrefetcher::TsetlinPrefetcher(
         const vector<int32_t>& actions,
         uint32_t pt_size, uint32_t pref_degree,
         float epsilon, uint8_t high_bw_thresh,
-        uint64_t seed, string type)
+        uint64_t seed, string type,
+        bool enable_dyn_degree,
+        const vector<int32_t>& dyn_deg_thresh,
+        const vector<int32_t>& dyn_deg_values,
+        const vector<int32_t>& dyn_deg_thresh_hbw,
+        const vector<int32_t>& dyn_deg_values_hbw)
     : Prefetcher(type)
     , m_num_features(tm_cfg.num_features)
     , m_actions(actions)
@@ -407,7 +412,11 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     , m_bw_level(0)
     , m_high_bw_thresh(high_bw_thresh)
     , m_pref_degree(pref_degree)
-    , m_enable_dyn_degree(false)
+    , m_enable_dyn_degree(enable_dyn_degree)
+    , m_dyn_deg_thresh(dyn_deg_thresh)
+    , m_dyn_deg_values(dyn_deg_values)
+    , m_dyn_deg_thresh_hbw(dyn_deg_thresh_hbw)
+    , m_dyn_deg_values_hbw(dyn_deg_values_hbw)
     , m_rng(seed)
     , m_explore(epsilon)
     , m_action_gen(0, m_max_actions - 1)
@@ -444,6 +453,7 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     m_stats.pt.lookup = 0; m_stats.pt.hit = 0; m_stats.pt.evict = 0; m_stats.pt.insert = 0;
     m_stats.predict.called = 0; m_stats.predict.explore = 0; m_stats.predict.exploit = 0;
     m_stats.predict.out_of_bounds = 0; m_stats.predict.predicted = 0;
+    m_stats.predict.multi_deg_called = 0; m_stats.predict.multi_deg_issued = 0;
     m_stats.reward.called = 0; m_stats.reward.pt_not_found = 0; m_stats.reward.pt_found = 0;
     m_stats.reward.correct_timely = 0; m_stats.reward.correct_untimely = 0;
     m_stats.reward.incorrect = 0; m_stats.reward.no_pref = 0;
@@ -453,6 +463,10 @@ TsetlinPrefetcher::TsetlinPrefetcher(
 
     m_stats.predict.action_dist.resize(m_max_actions, 0);
     m_stats.predict.issue_dist.resize(m_max_actions, 0);
+    // Dynamic degree histograms: size = max possible degree + 1 (index by degree)
+    uint32_t max_deg = m_pref_degree > 0 ? m_pref_degree : 6;
+    m_stats.predict.deg_histogram.resize(max_deg + 1, 0);
+    m_stats.predict.multi_deg_histogram.resize(max_deg + 1, 0);
     for (int i = 0; i < NUM_REWARD_TYPES; i++) {
         m_stats.reward.reward_per_action[i].resize(m_max_actions, 0);
     }
@@ -671,6 +685,18 @@ void TsetlinPrefetcher::invoke_prefetcher(
                     }
                     delete victim;
                 }
+
+                // ---- Dynamic multi-degree prefetch ----
+                // If enabled, issue extra speculative prefetches based on
+                // TM vote confidence. Only the base (degree-1) prefetch is
+                // PT-tracked; extra prefetches are speculative bonuses.
+                uint32_t dyn_degree = get_dyn_pref_degree(action_index);
+                m_stats.predict.deg_histogram[dyn_degree]++;
+                if (dyn_degree > 1) {
+                    gen_multi_degree_pref(page, offset,
+                                          m_actions[action_index],
+                                          dyn_degree, pref_addr);
+                }
             }
         } else {
             // Out-of-bounds: the chosen action would cross a page boundary.
@@ -870,6 +896,91 @@ bool TsetlinPrefetcher::is_high_bw() const {
     return m_bw_level >= m_high_bw_thresh;
 }
 
+/* -------------------------------------------------------------------------
+ * Dynamic prefetch degree based on TM vote confidence.
+ *
+ * Uses the class vote sum (capped between -T and +T) as a confidence proxy.
+ * Higher |class_sum| → more clauses agree on this action → higher confidence.
+ *
+ * The degree is selected by comparing confidence against a sorted list of
+ * thresholds.  Uses separate threshold/degree lists for normal vs high-BW
+ * operation (high BW → more conservative degree expansion to avoid wasting
+ * scarce bandwidth).
+ *
+ * Falls back to degree=1 if the action class sum is unavailable (should not
+ * happen in practice since predict() is called immediately before this).
+ * ------------------------------------------------------------------------- */
+uint32_t TsetlinPrefetcher::get_dyn_pref_degree(uint32_t action_index)
+{
+    if (!m_enable_dyn_degree) {
+        return m_pref_degree;
+    }
+
+    // action 0 = "no prefetch" → degree expansion is meaningless.
+    // Even though the caller (invoke_prefetcher) already guards this, a
+    // defensive check prevents misuse from future callers.
+    if (action_index < m_max_actions && m_actions[action_index] == 0) {
+        return 1;
+    }
+
+    int32_t class_sum = m_tm->get_class_sum(action_index);
+    int32_t conf = (class_sum < 0) ? -class_sum : class_sum;  // abs()
+
+    const vector<int32_t>& thresholds = is_high_bw()
+        ? m_dyn_deg_thresh_hbw : m_dyn_deg_thresh;
+    const vector<int32_t>& degrees = is_high_bw()
+        ? m_dyn_deg_values_hbw : m_dyn_deg_values;
+
+    if (thresholds.empty() || degrees.empty()) {
+        return 1;  // no thresholds configured → conservative
+    }
+
+    for (size_t i = 0; i < thresholds.size() && i < degrees.size(); i++) {
+        if (conf <= thresholds[i]) {
+            return (uint32_t)degrees[i];
+        }
+    }
+
+    // Confidence exceeds all thresholds → use the highest degree
+    return (uint32_t)degrees.back();
+}
+
+/* -------------------------------------------------------------------------
+ * Generate additional prefetch addresses for multi-degree prefetching.
+ *
+ * Given a base page, offset, and action delta, issues extra prefetches at
+ *   page + (offset + degree * action_delta) * BLOCK_SIZE
+ * for degree = 2, 3, ..., pref_degree.
+ *
+ * All generated addresses must stay within the current page.
+ * Extra prefetches are speculative (not PT-tracked) — only the base
+ * degree-1 prefetch is tracked for reward feedback (same as Pythia).
+ * ------------------------------------------------------------------------- */
+void TsetlinPrefetcher::gen_multi_degree_pref(
+        uint64_t page, uint32_t offset,
+        int32_t action_delta, uint32_t degree,
+        vector<uint64_t>& pref_addr)
+{
+    m_stats.predict.multi_deg_called++;
+
+    if (action_delta == 0 || degree <= 1) {
+        return;
+    }
+
+    int32_t max_offset = (1 << (LOG2_PAGE_SIZE - LOG2_BLOCK_SIZE)) - 1;
+
+    for (uint32_t d = 2; d <= degree; d++) {
+        int32_t predicted_offset = (int32_t)offset + (int32_t)d * action_delta;
+        if (predicted_offset >= 0 && predicted_offset <= max_offset) {
+            uint64_t addr = (page << LOG2_PAGE_SIZE)
+                          + ((uint64_t)predicted_offset << LOG2_BLOCK_SIZE);
+            pref_addr.push_back(addr);
+            m_stats.predict.multi_deg_issued++;
+            m_stats.predict.multi_deg_histogram[d]++;
+        }
+    }
+}
+
 const char* TsetlinPrefetcher::get_reward_type_name(int32_t type) const {
     switch (type) {
         case REWARD_TIMELY:    return "timely";
@@ -898,6 +1009,25 @@ void TsetlinPrefetcher::print_config() {
     cout << "tsetlin_last_offset_table " << LAST_OFFSET_TABLE_SIZE << " entries" << endl;
     cout << "tsetlin_pt_size " << m_pt_size << endl;
     cout << "tsetlin_pref_degree " << m_pref_degree << endl;
+    cout << "tsetlin_enable_dyn_degree " << (m_enable_dyn_degree ? "true" : "false") << endl;
+    if (m_enable_dyn_degree) {
+        cout << "tsetlin_dyn_deg_thresh ";
+        for (size_t i = 0; i < m_dyn_deg_thresh.size(); i++)
+            cout << m_dyn_deg_thresh[i] << (i < m_dyn_deg_thresh.size()-1 ? "," : "");
+        cout << endl;
+        cout << "tsetlin_dyn_deg_values ";
+        for (size_t i = 0; i < m_dyn_deg_values.size(); i++)
+            cout << m_dyn_deg_values[i] << (i < m_dyn_deg_values.size()-1 ? "," : "");
+        cout << endl;
+        cout << "tsetlin_dyn_deg_thresh_hbw ";
+        for (size_t i = 0; i < m_dyn_deg_thresh_hbw.size(); i++)
+            cout << m_dyn_deg_thresh_hbw[i] << (i < m_dyn_deg_thresh_hbw.size()-1 ? "," : "");
+        cout << endl;
+        cout << "tsetlin_dyn_deg_values_hbw ";
+        for (size_t i = 0; i < m_dyn_deg_values_hbw.size(); i++)
+            cout << m_dyn_deg_values_hbw[i] << (i < m_dyn_deg_values_hbw.size()-1 ? "," : "");
+        cout << endl;
+    }
     cout << "tsetlin_high_bw_thresh " << (int)m_high_bw_thresh << endl;
     cout << "tsetlin_explore_eps " << m_explore.p() << endl;
     cout << endl;
@@ -918,12 +1048,20 @@ void TsetlinPrefetcher::dump_stats() {
     cout << "tsetlin_predict_exploit " << m_stats.predict.exploit << endl;
     cout << "tsetlin_predict_out_of_bounds " << m_stats.predict.out_of_bounds << endl;
     cout << "tsetlin_predict_predicted " << m_stats.predict.predicted << endl;
+    cout << "tsetlin_predict_multi_deg_called " << m_stats.predict.multi_deg_called << endl;
+    cout << "tsetlin_predict_multi_deg_issued " << m_stats.predict.multi_deg_issued << endl;
 
     for (uint32_t i = 0; i < m_max_actions; i++) {
         cout << "tsetlin_predict_action_" << m_actions[i] << " "
              << m_stats.predict.action_dist[i] << endl;
         cout << "tsetlin_predict_issue_action_" << m_actions[i] << " "
              << m_stats.predict.issue_dist[i] << endl;
+    }
+    for (size_t d = 1; d < m_stats.predict.deg_histogram.size(); d++) {
+        cout << "tsetlin_degree_" << d << " " << m_stats.predict.deg_histogram[d] << endl;
+    }
+    for (size_t d = 2; d < m_stats.predict.multi_deg_histogram.size(); d++) {
+        cout << "tsetlin_multi_deg_" << d << " " << m_stats.predict.multi_deg_histogram[d] << endl;
     }
     cout << endl;
 

@@ -96,6 +96,7 @@ public:
     uint32_t num_features() const { return m_num_features; }
     float    get_theta(uint32_t action, uint32_t feat) const;
     float    get_ucb_bonus(const float* features, uint32_t action) const;
+    float    get_expected_reward(const float* features, uint32_t action) const;
 
     // ---- Debug ----
     void dump_state() const;
@@ -176,7 +177,12 @@ private:
     uint8_t   m_high_bw_thresh;
 
     // ---------- Prefetch degree ----------
-    uint32_t  m_pref_degree;
+    uint32_t             m_pref_degree;
+    bool                 m_enable_dyn_degree;
+    std::vector<int32_t> m_dyn_deg_thresh;        // confidence thresholds (sorted ascending)
+    std::vector<int32_t> m_dyn_deg_values;         // degree for each threshold bucket
+    std::vector<int32_t> m_dyn_deg_thresh_hbw;     // high-BW variant thresholds
+    std::vector<int32_t> m_dyn_deg_values_hbw;     // high-BW variant degrees
 
     // ---------- Last-offset tracking table ----------
     // Same lightweight stride detection as Tsetlin
@@ -211,8 +217,12 @@ private:
             uint64_t exploit;
             uint64_t out_of_bounds;
             uint64_t predicted;
+            uint64_t multi_deg_called;       // times multi-degree was invoked
+            uint64_t multi_deg_issued;       // extra prefetches from multi-degree
             std::vector<uint64_t> action_dist;
             std::vector<uint64_t> issue_dist;
+            std::vector<uint64_t> deg_histogram;       // which degree was selected
+            std::vector<uint64_t> multi_deg_histogram; // extra prefetches per sub-degree
         } predict;
 
         struct {
@@ -248,7 +258,12 @@ public:
                                float epsilon,
                                uint8_t high_bw_thresh,
                                uint64_t seed,
-                               std::string type = "linucb");
+                               std::string type = "linucb",
+                               bool enable_dyn_degree = false,
+                               const std::vector<int32_t>& dyn_deg_thresh = {},
+                               const std::vector<int32_t>& dyn_deg_values = {},
+                               const std::vector<int32_t>& dyn_deg_thresh_hbw = {},
+                               const std::vector<int32_t>& dyn_deg_values_hbw = {});
 
     ~ContextualBanditPrefetcher();
 
@@ -287,6 +302,14 @@ private:
 
     // Check if currently in high bandwidth state
     bool is_high_bw() const;
+
+    // Dynamic prefetch degree based on LinUCB expected reward confidence
+    uint32_t get_dyn_pref_degree(const float* features, uint32_t action_index);
+
+    // Generate multi-degree speculative prefetch addresses
+    void gen_multi_degree_pref(uint64_t page, uint32_t offset,
+                                int32_t action_delta, uint32_t degree,
+                                std::vector<uint64_t>& pref_addr);
 };
 
 #endif /* LINUCB_H */

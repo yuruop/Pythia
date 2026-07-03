@@ -203,8 +203,12 @@ private:
     uint8_t   m_high_bw_thresh;
 
     // ---------- Prefetch degree ----------
-    uint32_t  m_pref_degree;
-    bool      m_enable_dyn_degree;
+    uint32_t             m_pref_degree;
+    bool                 m_enable_dyn_degree;
+    std::vector<int32_t> m_dyn_deg_thresh;        // confidence thresholds (sorted ascending)
+    std::vector<int32_t> m_dyn_deg_values;         // degree for each threshold bucket
+    std::vector<int32_t> m_dyn_deg_thresh_hbw;     // high-BW variant thresholds
+    std::vector<int32_t> m_dyn_deg_values_hbw;     // high-BW variant degrees
 
     // ---------- Last-offset tracking table (lightweight stride detection) ----------
     // Simple direct-mapped table: page → last offset seen.
@@ -247,8 +251,12 @@ private:
             uint64_t exploit;
             uint64_t out_of_bounds;
             uint64_t predicted;
+            uint64_t multi_deg_called;       // times multi-degree was invoked
+            uint64_t multi_deg_issued;       // extra prefetches from multi-degree
             std::vector<uint64_t> action_dist;
             std::vector<uint64_t> issue_dist;
+            std::vector<uint64_t> deg_histogram;       // which degree was selected
+            std::vector<uint64_t> multi_deg_histogram; // extra prefetches per sub-degree
         } predict;
 
         struct {
@@ -281,7 +289,12 @@ public:
                       const std::vector<int32_t>& actions,
                       uint32_t pt_size, uint32_t pref_degree,
                       float epsilon, uint8_t high_bw_thresh,
-                      uint64_t seed, std::string type = "tsetlin");
+                      uint64_t seed, std::string type = "tsetlin",
+                      bool enable_dyn_degree = false,
+                      const std::vector<int32_t>& dyn_deg_thresh = {},
+                      const std::vector<int32_t>& dyn_deg_values = {},
+                      const std::vector<int32_t>& dyn_deg_thresh_hbw = {},
+                      const std::vector<int32_t>& dyn_deg_values_hbw = {});
 
     ~TsetlinPrefetcher();
 
