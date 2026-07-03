@@ -20,7 +20,10 @@
     // Container environment variables
     "containerEnv": {
         "PYTHIA_HOME": "/workspace",
-        "PERL5LIB": "${containerEnv:PERL5LIB}:/workspace/scripts"
+        "PERL5LIB": "${containerEnv:PERL5LIB}:/workspace/scripts",
+        "LANG": "en_US.UTF-8",
+        "LANGUAGE": "en_US:en",
+        "LC_ALL": "en_US.UTF-8"
     },
     // Post-create setup: clone libbf and build bloomfilter library
     "postCreateCommand": "if [ ! -d /workspace/libbf ]; then git clone https://github.com/mavam/libbf.git /workspace/libbf && cd /workspace/libbf && mkdir -p build && cd build && cmake ../ && make; else echo 'libbf already exists, skipping clone...'; fi",
