@@ -16,6 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     # Pythia-specific dependencies
     perl \
+    # Locale support (critical: fixes perl/bash setlocale warnings)
+    locales \
     # Utilities
     git \
     wget \
@@ -30,11 +32,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
+# Generate en_US.UTF-8 locale at build time and set it as system default
+RUN locale-gen en_US.UTF-8 && \
+    update-locale LANG=en_US.UTF-8 LANGUAGE=en_US:en LC_ALL=en_US.UTF-8
+
+# Bake locale environment variables into the image (persists across every shell/exec)
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
+
 # Verify installed versions
 RUN g++ --version && \
     cmake --version && \
     perl --version && \
-    git --version
+    git --version && \
+    locale
 
 # Set up working directory
 WORKDIR /workspace
