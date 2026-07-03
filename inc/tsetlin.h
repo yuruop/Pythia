@@ -111,6 +111,11 @@ public:
     // Retrieve the vote sum for a specific action (proxy for confidence).
     int32_t get_class_sum(uint32_t action_class) const;
 
+    // Retrieve the second-highest vote sum across all actions.
+    // Used for margin-based confidence: margin = class_sum[best] - class_sum[second].
+    // Returns 0 if there is only one action class.
+    int32_t get_second_best_class_sum() const;
+
     // ---- Accessors ----
     uint32_t num_actions() const { return m_num_actions; }
 
@@ -224,12 +229,19 @@ private:
     LastOffsetEntry m_last_offset_table[LAST_OFFSET_TABLE_SIZE];
 
     // ---------- Temperature encoding bit allocation ----------
-    // Hybrid scheme: temperature-encode ordinal features (offset, delta),
-    // hash-encode categorical features (PC, page, bw_level).
+    // Hybrid scheme with enhanced feature groups (P1.2).
     // Bit allocation computed from m_num_features at construction time.
     uint32_t m_temp_offset_bits;     // thermometer bits for block offset
-    uint32_t m_temp_delta_bits;      // thermometer bits for delta magnitude
+    uint32_t m_temp_delta_bits;      // thermometer bits for delta magnitude (12 in P1.2)
+    uint32_t m_interaction_bits;     // PC×Page interaction hash bits (4, NEW in P1.2)
+    uint32_t m_temp_bw_bits;         // thermometer bits for BW level (2, NEW in P1.2)
     uint32_t m_hash_feature_bits;    // remaining bits for hash encoding
+
+    // ---------- Epsilon-greedy annealing (P2.2) ----------
+    float    m_epsilon_init;         // initial ε during warmup (e.g., 0.05)
+    float    m_epsilon_min;          // floor ε after warmup (= configured epsilon)
+    uint64_t m_warmup_invocations;   // decay over this many invocations
+    uint64_t m_invocation_count;     // total invocations of invoke_prefetcher
 
     // ---------- RNG for exploration ----------
     std::mt19937                          m_rng;
@@ -296,7 +308,12 @@ public:
                       const std::vector<int32_t>& dyn_deg_thresh = {},
                       const std::vector<int32_t>& dyn_deg_values = {},
                       const std::vector<int32_t>& dyn_deg_thresh_hbw = {},
-                      const std::vector<int32_t>& dyn_deg_values_hbw = {});
+                      const std::vector<int32_t>& dyn_deg_values_hbw = {},
+                      uint32_t temp_delta_bits = 8,
+                      uint32_t interaction_bits = 0,
+                      uint32_t temp_bw_bits = 0,
+                      float epsilon_init = 0.005f,
+                      uint64_t warmup_invocations = 0);
 
     ~TsetlinPrefetcher();
 

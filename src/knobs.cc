@@ -273,23 +273,28 @@ namespace knob
 
 	/* Tsetlin Machine Prefetcher */
 	uint32_t tsetlin_num_clauses = 128;
-	uint32_t tsetlin_num_features = 48;
+	uint32_t tsetlin_num_features = 64;
 	uint32_t tsetlin_num_actions = 15;
 	uint32_t tsetlin_num_states = 8;
 	float    tsetlin_s = 3.0;
 	int32_t  tsetlin_threshold = 8;
 	uint64_t tsetlin_seed = 42;
 	vector<int32_t> tsetlin_actions;
+	uint32_t tsetlin_temp_delta_bits = 12;
+	uint32_t tsetlin_interaction_bits = 4;
+	uint32_t tsetlin_temp_bw_bits = 2;
 	uint32_t tsetlin_pt_size = 256;
 	uint32_t tsetlin_pref_degree = 1;
 	float    tsetlin_epsilon = 0.005;
+	float    tsetlin_epsilon_init = 0.05;
+	uint64_t tsetlin_warmup_invocations = 100000;
 	uint32_t tsetlin_high_bw_thresh = 3;
 	uint32_t tsetlin_rng_seed = 42;
 	bool     tsetlin_enable_dyn_degree = false;
-	vector<int32_t> tsetlin_dyn_deg_thresh = {2, 5, 7};
-	vector<int32_t> tsetlin_dyn_deg_values = {1, 2, 4, 6};
-	vector<int32_t> tsetlin_dyn_deg_thresh_hbw = {2, 5, 7};
-	vector<int32_t> tsetlin_dyn_deg_values_hbw = {1, 1, 2, 4};
+	vector<int32_t> tsetlin_dyn_deg_thresh = {2, 6, 9};
+	vector<int32_t> tsetlin_dyn_deg_values = {2, 2, 4, 6};
+	vector<int32_t> tsetlin_dyn_deg_thresh_hbw = {2, 6, 9};
+	vector<int32_t> tsetlin_dyn_deg_values_hbw = {1, 2, 2, 4};
 
 	/* Contextual Bandit (LinUCB) Prefetcher */
 	uint32_t linucb_num_actions = 15;
@@ -1297,6 +1302,11 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "tsetlin_dyn_deg_values"))        { knob::tsetlin_dyn_deg_values = get_array_int(value); }
 		else if (MATCH("", "tsetlin_dyn_deg_thresh_hbw"))    { knob::tsetlin_dyn_deg_thresh_hbw = get_array_int(value); }
 		else if (MATCH("", "tsetlin_dyn_deg_values_hbw"))    { knob::tsetlin_dyn_deg_values_hbw = get_array_int(value); }
+		else if (MATCH("", "tsetlin_temp_delta_bits"))       { knob::tsetlin_temp_delta_bits = atoi(value); }
+		else if (MATCH("", "tsetlin_interaction_bits"))      { knob::tsetlin_interaction_bits = atoi(value); }
+		else if (MATCH("", "tsetlin_temp_bw_bits"))          { knob::tsetlin_temp_bw_bits = atoi(value); }
+		else if (MATCH("", "tsetlin_epsilon_init"))          { knob::tsetlin_epsilon_init = atof(value); }
+		else if (MATCH("", "tsetlin_warmup_invocations"))    { knob::tsetlin_warmup_invocations = atol(value); }
 
 		/* Contextual Bandit (LinUCB) Prefetcher knobs */
 		else if (MATCH("", "linucb_num_actions"))    { knob::linucb_num_actions = atoi(value); }

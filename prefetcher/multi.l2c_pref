@@ -46,6 +46,11 @@ namespace knob
 	extern vector<int32_t> tsetlin_dyn_deg_values;
 	extern vector<int32_t> tsetlin_dyn_deg_thresh_hbw;
 	extern vector<int32_t> tsetlin_dyn_deg_values_hbw;
+	extern uint32_t tsetlin_temp_delta_bits;
+	extern uint32_t tsetlin_interaction_bits;
+	extern uint32_t tsetlin_temp_bw_bits;
+	extern float    tsetlin_epsilon_init;
+	extern uint64_t tsetlin_warmup_invocations;
 	/* Contextual Bandit (LinUCB) Prefetcher knobs */
 	extern uint32_t linucb_num_actions;
 	extern uint32_t linucb_num_features;
@@ -189,7 +194,12 @@ void CACHE::l2c_prefetcher_initialize()
 				knob::tsetlin_dyn_deg_thresh,
 				knob::tsetlin_dyn_deg_values,
 				knob::tsetlin_dyn_deg_thresh_hbw,
-				knob::tsetlin_dyn_deg_values_hbw);
+				knob::tsetlin_dyn_deg_values_hbw,
+				knob::tsetlin_temp_delta_bits,
+				knob::tsetlin_interaction_bits,
+				knob::tsetlin_temp_bw_bits,
+				knob::tsetlin_epsilon_init,
+				knob::tsetlin_warmup_invocations);
 			prefetchers.push_back(pref_tsetlin);
 		}
 		else if (!knob::l2c_prefetcher_types[index].compare("linucb"))

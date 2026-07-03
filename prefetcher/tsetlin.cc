@@ -370,6 +370,29 @@ int32_t TsetlinMachine::get_class_sum(uint32_t action_class) const {
     return m_class_sum[action_class];
 }
 
+int32_t TsetlinMachine::get_second_best_class_sum() const {
+    if (m_num_actions <= 1) return 0;
+
+    int32_t best = m_class_sum[0];
+    int32_t second = INT32_MIN;
+
+    // First pass: find the maximum
+    for (uint32_t a = 1; a < m_num_actions; a++) {
+        if (m_class_sum[a] > best) best = m_class_sum[a];
+    }
+
+    // Second pass: find the maximum that is strictly less than best
+    bool found = false;
+    for (uint32_t a = 0; a < m_num_actions; a++) {
+        if (m_class_sum[a] < best && m_class_sum[a] > second) {
+            second = m_class_sum[a];
+            found = true;
+        }
+    }
+
+    return found ? second : best;  // fallback if all equal (cold start)
+}
+
 void TsetlinMachine::dump_state() const {
     cout << "=== Tsetlin Machine State ===" << endl;
     cout << "clauses=" << m_num_clauses << " features=" << m_num_features
@@ -403,7 +426,12 @@ TsetlinPrefetcher::TsetlinPrefetcher(
         const vector<int32_t>& dyn_deg_thresh,
         const vector<int32_t>& dyn_deg_values,
         const vector<int32_t>& dyn_deg_thresh_hbw,
-        const vector<int32_t>& dyn_deg_values_hbw)
+        const vector<int32_t>& dyn_deg_values_hbw,
+        uint32_t temp_delta_bits,
+        uint32_t interaction_bits,
+        uint32_t temp_bw_bits,
+        float epsilon_init,
+        uint64_t warmup_invocations)
     : Prefetcher(type)
     , m_num_features(tm_cfg.num_features)
     , m_actions(actions)
@@ -417,8 +445,12 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     , m_dyn_deg_values(dyn_deg_values)
     , m_dyn_deg_thresh_hbw(dyn_deg_thresh_hbw)
     , m_dyn_deg_values_hbw(dyn_deg_values_hbw)
+    , m_epsilon_init(epsilon_init)
+    , m_epsilon_min(epsilon)
+    , m_warmup_invocations(warmup_invocations)
+    , m_invocation_count(0)
     , m_rng(seed)
-    , m_explore(epsilon)
+    , m_explore(epsilon_init > epsilon ? epsilon_init : epsilon)  // start at init rate
     , m_action_gen(0, m_max_actions - 1)
 {
     // Create the Tsetlin Machine
@@ -436,18 +468,26 @@ TsetlinPrefetcher::TsetlinPrefetcher(
         m_last_offset_table[i].last_offset = -1;
     }
 
-    // Compute temperature encoding bit allocation (hybrid scheme)
-    // Ordinal features (offset, delta) → temperature encoded (preserves ordering)
-    // Categorical features (PC, page, bw_level) → hash encoded
-    // Assumption: m_num_features >= 17 (8 offset + 8 delta + 1 sign)
+    // ---- Enhanced feature bit allocation (P1.2) ----
+    // Layout with 64-bit default:
+    //   [0..hash_bits-1]:             hash(PC, page) — 37 bits
+    //   [hash_bits..+7]:              thermometer(offset) — 8 bits
+    //   [hash_bits+8..+8+delta-1]:    thermometer(|delta|) — 12 bits (was 8)
+    //   [hash_bits+8+delta]:          delta sign — 1 bit
+    //   [hash_bits+9+delta..]:        PC×Page interaction hash — 4 bits (NEW)
+    //   [..end]:                       thermometer(bw_level) — 2 bits (NEW)
     m_temp_offset_bits = 8;
-    m_temp_delta_bits  = 8;
-    // Guard against unsigned underflow: if m_num_features is too small,
-    // the subtraction would wrap around to a huge value, and the original
-    // assert(m_hash_feature_bits > 0) would pass spuriously on uint32_t.
-    assert(m_num_features >= m_temp_offset_bits + m_temp_delta_bits + 1
-           && "Need at least 17 features for hybrid encoding (8 offset + 8 delta + 1 sign)");
-    m_hash_feature_bits = m_num_features - m_temp_offset_bits - m_temp_delta_bits - 1;
+    m_temp_delta_bits  = (temp_delta_bits >= 8) ? temp_delta_bits : 8;
+    m_interaction_bits = interaction_bits;
+    m_temp_bw_bits     = temp_bw_bits;
+
+    uint32_t min_features = m_temp_offset_bits + m_temp_delta_bits + 1
+                          + m_interaction_bits + m_temp_bw_bits;
+    assert(m_num_features >= min_features &&
+           "num_features too small for configured feature bit allocation");
+    m_hash_feature_bits = m_num_features - m_temp_offset_bits
+                        - m_temp_delta_bits - 1
+                        - m_interaction_bits - m_temp_bw_bits;
 
     // Initialize stats (zero-init scalars; vectors resized below)
     m_stats.pt.lookup = 0; m_stats.pt.hit = 0; m_stats.pt.evict = 0; m_stats.pt.insert = 0;
@@ -482,39 +522,35 @@ TsetlinPrefetcher::~TsetlinPrefetcher() {
 }
 
 /* -------------------------------------------------------------------------
- * Feature Generation: Program state → Binary feature vector
+ * Feature Generation: Program state → Binary feature vector (P1.2 enhanced)
  *
- * HYBRID ENCODING SCHEME:
- * - Categorical features (PC, page, bw_level) → XOR-based hashing
- *   These are discrete IDs; hash encoding is appropriate since there is no
- *   meaningful ordering — PC 0x400100 and PC 0x400200 are different
- *   programs, not "larger/smaller" values.
- * - Ordinal features (offset, delta) → thermometer (temperature) encoding
- *   These are continuous/numeric with meaningful ordering. Thermometer
- *   encoding preserves monotonicity, allowing the TM to learn interval
- *   rules like "offset >= 32" via simple AND clauses.
+ * HYBRID ENCODING SCHEME (64-bit default):
+ * - Categorical features (PC, page) → XOR-based hashing (37 bits)
+ * - Ordinal features (offset) → thermometer encoding (8 bits)
+ * - Ordinal features (delta) → thermometer encoding (12 bits, was 8)
+ * - Delta sign → 1 bit
+ * - PC×Page interaction → XOR hash (4 bits, NEW in P1.2)
+ * - BW level → thermometer encoding (2 bits, NEW in P1.2)
  *
- * Feature layout (48 bits total with default config):
- *   [0..hash_bits-1]                    : hash(PC, page, bw_level)
- *   [hash_bits..hash_bits+7]            : thermometer(offset, 8 bits)
- *   [hash_bits+8..hash_bits+15]         : thermometer(|delta|, 8 bits)
- *   [hash_bits+16]                      : delta sign (1 = positive/zero)
+ * Feature layout (64 bits):
+ *   [0..hash_bits-1]                    : hash(PC, page)
+ *   [hash_bits..+7]                     : thermometer(offset, 8 bits)
+ *   [hash_bits+8..+8+delta_bits-1]      : thermometer(|delta|, 12 bits)
+ *   [hash_bits+8+delta_bits]            : delta sign (1 = positive/zero)
+ *   [next..next+interaction_bits-1]     : PC×Page interaction hash
+ *   [last..last+bw_bits-1]              : thermometer(bw_level)
  *
  * All operations are integer bitwise or comparisons → hardware-friendly.
- *
- * Inputs: PC, page, offset (block offset within page), delta (last stride),
- *         bw_level (DRAM bandwidth utilization level)
- * Output: binary features[0..num_features-1]
  * ------------------------------------------------------------------------- */
 void TsetlinPrefetcher::generate_features(
         uint64_t pc, uint64_t page, uint32_t offset,
         int32_t delta, uint8_t bw_level, int32_t* features)
 {
-    // ---- Part 1: Hash encoding for categorical features ----
-    // PC and page are discrete IDs; bw_level is a coarse bucket (4 levels).
+    // ---- Part 1: Hash encoding for categorical features (PC, page) ----
+    // BW level is no longer mixed into the hash — it gets its own
+    // independent thermometer encoding below (P1.2).
     uint64_t base = pc;
     base ^= (page << 3);
-    base ^= ((uint64_t)bw_level << 21);
 
     for (uint32_t i = 0; i < m_hash_feature_bits; i++) {
         uint64_t h = base ^ ((uint64_t)i * 0x9E3779B97F4A7C15ULL);
@@ -527,21 +563,17 @@ void TsetlinPrefetcher::generate_features(
         features[i] = (int32_t)(h & 1);
     }
 
-    // ---- Part 2: Thermometer encoding for block offset [0, 63] ----
-    // threshold_i = i * 63 / 8 for i = 1..8
-    // offset=0  → 00000000, offset=63 → 11111111 (monotonic)
-    // All-integer comparison — a single parallel comparator array in HW.
     uint32_t feat_base = m_hash_feature_bits;
+
+    // ---- Part 2: Thermometer encoding for block offset [0, 63] ----
     for (uint32_t i = 0; i < m_temp_offset_bits; i++) {
         int32_t threshold = (int32_t)((i + 1) * 63 / m_temp_offset_bits);
         features[feat_base + i] = ((int32_t)offset >= threshold) ? 1 : 0;
     }
 
-    // ---- Part 3: Thermometer encoding for delta magnitude [0, 63] ----
-    // Delta range is naturally [-63, +63] for a 64-block page.
-    // NOTE: the & 0xFFF mask in the old hash scheme is safe because 63
-    //       fits in 6 bits, well within 12. If cross-page prefetching is
-    //       added later, expand the magnitude encoding accordingly.
+    // ---- Part 3: Thermometer encoding for delta magnitude (P1.2: 12 bits) ----
+    // Finer resolution (12 vs 8 thresholds) distinguishes strides like +3 vs +4
+    // that previously mapped to the same coarse bucket. Delta range is [-63, +63].
     uint32_t delta_mag = (uint32_t)((delta < 0) ? (-delta) : delta);
     feat_base += m_temp_offset_bits;
     for (uint32_t i = 0; i < m_temp_delta_bits; i++) {
@@ -550,9 +582,39 @@ void TsetlinPrefetcher::generate_features(
     }
 
     // ---- Part 4: Delta sign bit ----
-    // 1 = forward/non-negative stride, 0 = backward stride
     feat_base += m_temp_delta_bits;
     features[feat_base] = (delta >= 0) ? 1 : 0;
+
+    // ---- Part 5: PC×Page interaction hash (P1.2 NEW) ----
+    // Captures joint (PC, page) identity — different from the sum of individual
+    // hashes because the interaction encodes which PC operates on which page.
+    // This was the #1 missing feature vs LinUCB's feature [6].
+    if (m_interaction_bits > 0) {
+        uint64_t interaction_base = pc ^ (page << 7) ^ 0xA5A5A5A5A5A5A5A5ULL;
+        feat_base += 1;  // skip sign bit
+        for (uint32_t i = 0; i < m_interaction_bits; i++) {
+            uint64_t h = interaction_base ^ ((uint64_t)i * 0x9E3779B97F4A7C15ULL);
+            h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            h = (h ^ (h >> 27)) * 0x94D049BB133111EBULL;
+            h = h ^ (h >> 31);
+            features[feat_base + i] = (int32_t)(h & 1);
+        }
+    } else {
+        feat_base += 1;
+    }
+
+    // ---- Part 6: Thermometer encoding for BW level (P1.2 NEW) ----
+    // DRAM_BW_LEVELS = 4 (0=idle, 1=low, 2=medium, 3=high).
+    // Independent encoding so the TM can learn BW-aware rules like
+    // "if BW is high AND stride is small → don't prefetch".
+    if (m_temp_bw_bits > 0) {
+        feat_base += m_interaction_bits;
+        uint32_t bw_max = 3;  // DRAM_BW_LEVELS - 1
+        for (uint32_t i = 0; i < m_temp_bw_bits; i++) {
+            int32_t threshold = (int32_t)((i + 1) * bw_max / m_temp_bw_bits);
+            features[feat_base + i] = ((int32_t)bw_level >= threshold) ? 1 : 0;
+        }
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -624,6 +686,19 @@ void TsetlinPrefetcher::invoke_prefetcher(
 
     // ---- Step 4: Predict action ----
     m_stats.predict.called++;
+
+    // ---- ε-greedy annealing (P2.2) ----
+    // Start with higher exploration (m_epsilon_init) and linearly decay to
+    // the configured floor (m_epsilon_min) over m_warmup_invocations.
+    // This helps the TM escape the cold-start local optimum where negative
+    // feedback dominates — more exploration early means more chances to
+    // discover positive reward patterns.
+    if (m_invocation_count < m_warmup_invocations) {
+        float progress = (float)m_invocation_count / (float)m_warmup_invocations;
+        float current_eps = m_epsilon_init - (m_epsilon_init - m_epsilon_min) * progress;
+        m_explore = std::bernoulli_distribution(current_eps);
+    }
+    m_invocation_count++;
 
     uint32_t action_index;
 
@@ -823,13 +898,19 @@ int32_t TsetlinPrefetcher::compute_reward(
         case REWARD_TIMELY:    return high_bw ? 25 : 20;
         // High BW: late prefetches are more harmful (wasted BW when it's scarce)
         case REWARD_UNTIMELY:  return high_bw ?  6 : 10;
-        // High BW: wrong prefetches waste scarce BW → penalize harder
-        case REWARD_INCORRECT: return high_bw ? -16 : -8;
+        // P2.1: INCORRECT is split by is_filled.
+        // - filled=true:  data arrived but PT window too short → mild penalty
+        //                  (the prefetch was useful, tracking just failed)
+        // - filled=false: data never arrived → true incorrect → full penalty
+        case REWARD_INCORRECT:
+            if (entry->is_filled) {
+                return high_bw ? -8 : -4;   // PT pressure, not truly bad
+            } else {
+                return high_bw ? -16 : -8;  // genuinely useless prefetch
+            }
         // No-prefetch decisions age out without any demand access hitting the
         // would-be-prefetched location.  Return 0 (neutral) to avoid creating a
-        // systematic bias against action 0.  The TM neither learns to prefer nor
-        // avoid no-prefetch — action 0 stays competitive as a fallback when all
-        // other actions are performing poorly.
+        // systematic bias against action 0.
         case REWARD_NONE:      return 0;
         default:               return 0;
     }
@@ -906,18 +987,18 @@ bool TsetlinPrefetcher::is_high_bw() const {
 }
 
 /* -------------------------------------------------------------------------
- * Dynamic prefetch degree based on TM vote confidence.
+ * Dynamic prefetch degree based on TM vote margin (P1.1: margin-based).
  *
- * Uses the class vote sum (capped between -T and +T) as a confidence proxy.
- * Higher |class_sum| → more clauses agree on this action → higher confidence.
+ * Uses the vote MARGIN (class_sum[best] - class_sum[second_best]) as a
+ * confidence proxy, rather than the absolute class sum.  This captures the
+ * TM's certainty about which action is correct: a best=7 with second=6
+ * (margin=1) is much less certain than best=7 with second=0 (margin=7),
+ * even though both have the same absolute class sum.
  *
- * The degree is selected by comparing confidence against a sorted list of
- * thresholds.  Uses separate threshold/degree lists for normal vs high-BW
- * operation (high BW → more conservative degree expansion to avoid wasting
- * scarce bandwidth).
+ * Margin range: [0, 2T] = [0, 16] for default T=8.
+ * Thresholds should be scaled accordingly (~2× the old absolute values).
  *
- * Falls back to degree=1 if the action class sum is unavailable (should not
- * happen in practice since predict() is called immediately before this).
+ * Falls back to degree=1 if the action class sum is unavailable.
  * ------------------------------------------------------------------------- */
 uint32_t TsetlinPrefetcher::get_dyn_pref_degree(uint32_t action_index)
 {
@@ -926,14 +1007,16 @@ uint32_t TsetlinPrefetcher::get_dyn_pref_degree(uint32_t action_index)
     }
 
     // action 0 = "no prefetch" → degree expansion is meaningless.
-    // Even though the caller (invoke_prefetcher) already guards this, a
-    // defensive check prevents misuse from future callers.
     if (action_index < m_max_actions && m_actions[action_index] == 0) {
         return 1;
     }
 
-    int32_t class_sum = m_tm->get_class_sum(action_index);
-    int32_t conf = (class_sum < 0) ? -class_sum : class_sum;  // abs()
+    // P1.1: margin-based confidence = best_class_sum - second_best_class_sum
+    // Higher margin → clearer winner → more confidence → higher degree.
+    int32_t best_sum   = m_tm->get_class_sum(action_index);
+    int32_t second_sum = m_tm->get_second_best_class_sum();
+    int32_t conf = best_sum - second_sum;
+    if (conf < 0) conf = 0;  // clamp: shouldn't happen, but defensive
 
     const vector<int32_t>& thresholds = is_high_bw()
         ? m_dyn_deg_thresh_hbw : m_dyn_deg_thresh;
@@ -1006,9 +1089,11 @@ const char* TsetlinPrefetcher::get_reward_type_name(int32_t type) const {
 void TsetlinPrefetcher::print_config() {
     cout << "=== Tsetlin Prefetcher Configuration ===" << endl;
     cout << "tsetlin_num_features " << m_num_features << endl;
-    cout << "  - hash features    " << m_hash_feature_bits << " (PC, page, bw_level)" << endl;
-    cout << "  - offset thermometer " << m_temp_offset_bits << " bits" << endl;
-    cout << "  - delta thermometer  " << m_temp_delta_bits << " bits (+ 1 sign bit)" << endl;
+    cout << "  - hash features       " << m_hash_feature_bits << " (PC, page)" << endl;
+    cout << "  - offset thermometer  " << m_temp_offset_bits << " bits" << endl;
+    cout << "  - delta thermometer   " << m_temp_delta_bits << " bits (+ 1 sign bit)" << endl;
+    cout << "  - PCxPage interaction " << m_interaction_bits << " bits (P1.2)" << endl;
+    cout << "  - BW thermometer      " << m_temp_bw_bits << " bits (P1.2)" << endl;
     cout << "tsetlin_num_actions " << m_max_actions << endl;
     cout << "tsetlin_actions ";
     for (size_t i = 0; i < m_actions.size(); i++) {
@@ -1019,8 +1104,9 @@ void TsetlinPrefetcher::print_config() {
     cout << "tsetlin_pt_size " << m_pt_size << endl;
     cout << "tsetlin_pref_degree " << m_pref_degree << endl;
     cout << "tsetlin_enable_dyn_degree " << (m_enable_dyn_degree ? "true" : "false") << endl;
+    cout << "tsetlin_dyn_deg_confidence_type margin-based (P1.1)" << endl;
     if (m_enable_dyn_degree) {
-        cout << "tsetlin_dyn_deg_thresh ";
+        cout << "tsetlin_dyn_deg_thresh (margin) ";
         for (size_t i = 0; i < m_dyn_deg_thresh.size(); i++)
             cout << m_dyn_deg_thresh[i] << (i < m_dyn_deg_thresh.size()-1 ? "," : "");
         cout << endl;
@@ -1028,7 +1114,7 @@ void TsetlinPrefetcher::print_config() {
         for (size_t i = 0; i < m_dyn_deg_values.size(); i++)
             cout << m_dyn_deg_values[i] << (i < m_dyn_deg_values.size()-1 ? "," : "");
         cout << endl;
-        cout << "tsetlin_dyn_deg_thresh_hbw ";
+        cout << "tsetlin_dyn_deg_thresh_hbw (margin) ";
         for (size_t i = 0; i < m_dyn_deg_thresh_hbw.size(); i++)
             cout << m_dyn_deg_thresh_hbw[i] << (i < m_dyn_deg_thresh_hbw.size()-1 ? "," : "");
         cout << endl;
@@ -1038,7 +1124,10 @@ void TsetlinPrefetcher::print_config() {
         cout << endl;
     }
     cout << "tsetlin_high_bw_thresh " << (int)m_high_bw_thresh << endl;
-    cout << "tsetlin_explore_eps " << m_explore.p() << endl;
+    cout << "tsetlin_epsilon_init " << m_epsilon_init
+         << " (P2.2, current=" << m_explore.p() << ")" << endl;
+    cout << "tsetlin_epsilon_min " << m_epsilon_min << endl;
+    cout << "tsetlin_warmup_invocations " << m_warmup_invocations << endl;
     cout << endl;
 }
 
