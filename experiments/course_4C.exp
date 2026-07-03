@@ -1,0 +1,30 @@
+##############################################################
+##
+## This file contains reduced-scale four-core experiments
+## for course project.
+## Based on MICRO21_4C.exp with smaller warmup/simulation.
+##
+## Original: warmup=50M sim=150M
+## Course:   warmup=10M sim=30M
+##
+###############################################################
+
+
+# configurations
+BASE = --warmup_instructions=10000000 --simulation_instructions=30000000
+NOPREF = --config=$(PYTHIA_HOME)/config/nopref.ini
+SPP_DEV2 = --l2c_prefetcher_types=spp_dev2 --config=$(PYTHIA_HOME)/config/spp_dev2.ini
+MLOP = --l2c_prefetcher_types=mlop --config=$(PYTHIA_HOME)/config/mlop.ini
+BINGO = --l2c_prefetcher_types=bingo --config=$(PYTHIA_HOME)/config/bingo.ini
+PYTHIA = --l2c_prefetcher_types=scooby --config=$(PYTHIA_HOME)/config/pythia.ini
+LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
+TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
+
+# Core experiments: baseline prefetcher comparison (four-core)
+nopref						$(BASE) $(NOPREF)
+spp						$(BASE) $(SPP_DEV2)
+bingo						$(BASE) $(BINGO)
+mlop						$(BASE) $(MLOP)
+pythia						$(BASE) $(PYTHIA)
+linucb						$(BASE) $(LINUCB)
+tsetlin						$(BASE) $(TSETLIN)
