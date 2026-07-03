@@ -1,0 +1,107 @@
+##################################################################
+##
+## Tsetlin Machine Parameter Sweep — Development Phase
+##
+## Tests different parameter ratios for the Tsetlin prefetcher.
+## Warmup: 20M instructions, Simulation: 100M instructions.
+## Single trace (cassandra_phase0_core0), single core.
+##
+## Usage:
+##   1. Build:  ./build_champsim.sh no tsetlin no 1
+##   2. Generate job file:
+##      ./scripts/create_jobfile.pl \
+##          --exe $(PYTHIA_HOME)/bin/perceptron-no-tsetlin-no-ship-1core.exe \
+##          --exp $(PYTHIA_HOME)/experiments/param_sweep_tsetlin_1C.exp \
+##          --tlist $(PYTHIA_HOME)/experiments/param_sweep_1C.tlist \
+##          --local 1 --ncores 4 > run_tsetlin_sweep.sh
+##   3. Run:  bash run_tsetlin_sweep.sh
+##
+##################################################################
+
+
+# =========================================================================
+# Config Variables
+# =========================================================================
+BASE = --warmup_instructions=20000000 --simulation_instructions=100000000
+TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
+
+# =========================================================================
+# Baseline (default parameters from config/tsetlin.ini)
+#   num_clauses=128, s=3.0, T=8, states=8, epsilon=0.005
+#   epsilon_init=0.05, warmup=100K, pt_size=512, dyn_degree=enabled
+# =========================================================================
+tsetlin_baseline			$(BASE) $(TSETLIN)
+
+# =========================================================================
+# Clause Count Sweep (default: 128)
+#   Controls model capacity — more clauses = more patterns can be learned
+# =========================================================================
+tsetlin_cls64				$(BASE) $(TSETLIN) --tsetlin_num_clauses=64
+tsetlin_cls256				$(BASE) $(TSETLIN) --tsetlin_num_clauses=256
+
+# =========================================================================
+# Precision Parameter s Sweep (default: 3.0)
+#   Controls pattern specificity — higher s → more specific patterns
+# =========================================================================
+tsetlin_s1.5				$(BASE) $(TSETLIN) --tsetlin_s=1.5
+tsetlin_s5.0				$(BASE) $(TSETLIN) --tsetlin_s=5.0
+tsetlin_s10.0				$(BASE) $(TSETLIN) --tsetlin_s=10.0
+
+# =========================================================================
+# Voting Threshold T Sweep (default: 8)
+#   Controls resource allocation sensitivity — higher T → more tolerant
+# =========================================================================
+tsetlin_T4				$(BASE) $(TSETLIN) --tsetlin_threshold=4
+tsetlin_T16				$(BASE) $(TSETLIN) --tsetlin_threshold=16
+
+# =========================================================================
+# States per TA Sweep (default: 8 → 16 total states)
+#   Controls learning inertia — fewer states = faster adaptation
+# =========================================================================
+tsetlin_st4				$(BASE) $(TSETLIN) --tsetlin_num_states=4
+tsetlin_st16				$(BASE) $(TSETLIN) --tsetlin_num_states=16
+
+# =========================================================================
+# Epsilon (Exploration Rate) Sweep (default: 0.005)
+#   Controls random exploration vs exploitation
+# =========================================================================
+tsetlin_eps0.001				$(BASE) $(TSETLIN) --tsetlin_epsilon=0.001
+tsetlin_eps0.01				$(BASE) $(TSETLIN) --tsetlin_epsilon=0.01
+
+# =========================================================================
+# Warmup / Annealing (default: epsilon_init=0.05, warmup_invocations=100K)
+#   Longer warmup with higher initial exploration
+# =========================================================================
+tsetlin_warmup_ext			$(BASE) $(TSETLIN) --tsetlin_epsilon_init=0.1 --tsetlin_warmup_invocations=200000
+
+# =========================================================================
+# PT Size Sweep (default: 512)
+#   Smaller PT may cause premature eviction and learning starvation
+# =========================================================================
+tsetlin_pt256				$(BASE) $(TSETLIN) --tsetlin_pt_size=256
+
+# =========================================================================
+# Dynamic Degree Control
+# =========================================================================
+
+# Disable dynamic degree → fixed degree=2
+tsetlin_nodyn				$(BASE) $(TSETLIN) --tsetlin_enable_dyn_degree=0 --tsetlin_pref_degree=2
+
+# Aggressive: lower thresholds → more multi-degree prefetching
+tsetlin_dyn_agg				$(BASE) $(TSETLIN) --tsetlin_dyn_deg_thresh=1,3,5 --tsetlin_dyn_deg_values=2,4,6,8 --tsetlin_dyn_deg_thresh_hbw=1,3,5 --tsetlin_dyn_deg_values_hbw=1,2,3,4
+
+# Conservative: higher thresholds → less multi-degree prefetching
+tsetlin_dyn_cons				$(BASE) $(TSETLIN) --tsetlin_dyn_deg_thresh=4,8,12 --tsetlin_dyn_deg_values=1,2,2,3 --tsetlin_dyn_deg_thresh_hbw=4,8,12 --tsetlin_dyn_deg_values_hbw=1,1,2,2
+
+# =========================================================================
+# Combined Tests (exploring interactions)
+# =========================================================================
+
+# Small + fast: half clauses, low precision, low threshold → fast learning
+tsetlin_small_fast			$(BASE) $(TSETLIN) --tsetlin_num_clauses=64 --tsetlin_s=1.5 --tsetlin_threshold=4
+
+# Large + precise: double clauses, high precision, high threshold → slow & accurate
+tsetlin_large_precise			$(BASE) $(TSETLIN) --tsetlin_num_clauses=256 --tsetlin_s=10.0 --tsetlin_threshold=16
+
+# High exploration combo: high epsilon + extended warmup
+tsetlin_explore_hi			$(BASE) $(TSETLIN) --tsetlin_epsilon=0.01 --tsetlin_epsilon_init=0.1 --tsetlin_warmup_invocations=200000

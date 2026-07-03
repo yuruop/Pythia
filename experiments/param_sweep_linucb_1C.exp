@@ -1,0 +1,88 @@
+##################################################################
+##
+## LinUCB Contextual Bandit Parameter Sweep — Development Phase
+##
+## Tests different parameter ratios for the LinUCB prefetcher.
+## Warmup: 20M instructions, Simulation: 100M instructions.
+## Single trace (cassandra_phase0_core0), single core.
+##
+## Usage:
+##   1. Build:  ./build_champsim.sh no linucb no 1
+##   2. Generate job file:
+##      ./scripts/create_jobfile.pl \
+##          --exe $(PYTHIA_HOME)/bin/perceptron-no-linucb-no-ship-1core.exe \
+##          --exp $(PYTHIA_HOME)/experiments/param_sweep_linucb_1C.exp \
+##          --tlist $(PYTHIA_HOME)/experiments/param_sweep_1C.tlist \
+##          --local 1 --ncores 4 > run_linucb_sweep.sh
+##   3. Run:  bash run_linucb_sweep.sh
+##
+##################################################################
+
+
+# =========================================================================
+# Config Variables
+# =========================================================================
+BASE = --warmup_instructions=20000000 --simulation_instructions=100000000
+LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
+
+# =========================================================================
+# Baseline (default parameters from config/linucb.ini)
+#   alpha=1.5, lambda=1.0, epsilon=0.005, pt_size=256, dyn_degree=enabled
+# =========================================================================
+linucb_baseline				$(BASE) $(LINUCB)
+
+# =========================================================================
+# Alpha (UCB Exploration) Sweep (default: 1.5)
+#   Higher alpha → wider confidence bounds → more exploration
+# =========================================================================
+linucb_a0.5				$(BASE) $(LINUCB) --linucb_alpha=0.5
+linucb_a1.0				$(BASE) $(LINUCB) --linucb_alpha=1.0
+linucb_a2.5				$(BASE) $(LINUCB) --linucb_alpha=2.5
+linucb_a5.0				$(BASE) $(LINUCB) --linucb_alpha=5.0
+
+# =========================================================================
+# Lambda (L2 Regularization) Sweep (default: 1.0)
+#   Lower lambda → more aggressive fitting to recent data
+#   Higher lambda → more conservative (stronger regularization)
+# =========================================================================
+linucb_l0.1				$(BASE) $(LINUCB) --linucb_lambda=0.1
+linucb_l0.5				$(BASE) $(LINUCB) --linucb_lambda=0.5
+linucb_l5.0				$(BASE) $(LINUCB) --linucb_lambda=5.0
+linucb_l10.0				$(BASE) $(LINUCB) --linucb_lambda=10.0
+
+# =========================================================================
+# Epsilon (Random Exploration) Sweep (default: 0.005)
+#   On top of LinUCB's native UCB exploration
+# =========================================================================
+linucb_eps0.001				$(BASE) $(LINUCB) --linucb_epsilon=0.001
+linucb_eps0.01				$(BASE) $(LINUCB) --linucb_epsilon=0.01
+
+# =========================================================================
+# PT Size Sweep (default: 256)
+#   Smaller PT may cause premature eviction at higher degrees
+# =========================================================================
+linucb_pt128				$(BASE) $(LINUCB) --linucb_pt_size=128
+linucb_pt512				$(BASE) $(LINUCB) --linucb_pt_size=512
+
+# =========================================================================
+# Dynamic Degree Control
+# =========================================================================
+
+# Disable dynamic degree → fixed degree=2
+linucb_nodyn				$(BASE) $(LINUCB) --linucb_enable_dyn_degree=0 --linucb_pref_degree=2
+
+# Aggressive: lower thresholds → more multi-degree prefetching
+linucb_dyn_agg				$(BASE) $(LINUCB) --linucb_dyn_deg_thresh=5,15,30 --linucb_dyn_deg_values=2,4,6,8 --linucb_dyn_deg_thresh_hbw=5,15,30 --linucb_dyn_deg_values_hbw=1,2,3,4
+
+# Conservative: higher thresholds → less multi-degree prefetching
+linucb_dyn_cons				$(BASE) $(LINUCB) --linucb_dyn_deg_thresh=20,50,80 --linucb_dyn_deg_values=1,2,2,3 --linucb_dyn_deg_thresh_hbw=20,50,80 --linucb_dyn_deg_values_hbw=1,1,2,2
+
+# =========================================================================
+# Combined Tests (exploring interactions)
+# =========================================================================
+
+# Greedy: low alpha, low epsilon, strong regularization → exploit-heavy
+linucb_greedy				$(BASE) $(LINUCB) --linucb_alpha=0.5 --linucb_epsilon=0.001 --linucb_lambda=5.0
+
+# Curious: high alpha, high epsilon, weak regularization → explore-heavy
+linucb_curious				$(BASE) $(LINUCB) --linucb_alpha=5.0 --linucb_epsilon=0.01 --linucb_lambda=0.1

@@ -1,0 +1,3 @@
+NAME=cassandra_phase0_core0
+TRACE=$(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz
+KNOBS=--knob_cloudsuite=true
