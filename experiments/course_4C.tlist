@@ -1,0 +1,94 @@
+##
+## Reduced trace list for course project (four-core).
+## Same benchmark selection as course_1C.tlist, replicated 4x
+## for multi-core simulation.
+##
+
+# =================== SPEC2006 ===================
+NAME=403.gcc-16B_4T
+TRACE=$(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz $(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz $(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz $(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz
+KNOBS=
+
+NAME=429.mcf-184B_4T
+TRACE=$(PYTHIA_HOME)/traces/429.mcf-184B.champsimtrace.xz $(PYTHIA_HOME)/traces/429.mcf-184B.champsimtrace.xz $(PYTHIA_HOME)/traces/429.mcf-184B.champsimtrace.xz $(PYTHIA_HOME)/traces/429.mcf-184B.champsimtrace.xz
+KNOBS=
+
+NAME=433.milc-127B_4T
+TRACE=$(PYTHIA_HOME)/traces/433.milc-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/433.milc-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/433.milc-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/433.milc-127B.champsimtrace.xz
+KNOBS=
+
+NAME=450.soplex-247B_4T
+TRACE=$(PYTHIA_HOME)/traces/450.soplex-247B.champsimtrace.xz $(PYTHIA_HOME)/traces/450.soplex-247B.champsimtrace.xz $(PYTHIA_HOME)/traces/450.soplex-247B.champsimtrace.xz $(PYTHIA_HOME)/traces/450.soplex-247B.champsimtrace.xz
+KNOBS=
+
+NAME=462.libquantum-1343B_4T
+TRACE=$(PYTHIA_HOME)/traces/462.libquantum-1343B.champsimtrace.xz $(PYTHIA_HOME)/traces/462.libquantum-1343B.champsimtrace.xz $(PYTHIA_HOME)/traces/462.libquantum-1343B.champsimtrace.xz $(PYTHIA_HOME)/traces/462.libquantum-1343B.champsimtrace.xz
+KNOBS=
+
+NAME=470.lbm-1274B_4T
+TRACE=$(PYTHIA_HOME)/traces/470.lbm-1274B.champsimtrace.xz $(PYTHIA_HOME)/traces/470.lbm-1274B.champsimtrace.xz $(PYTHIA_HOME)/traces/470.lbm-1274B.champsimtrace.xz $(PYTHIA_HOME)/traces/470.lbm-1274B.champsimtrace.xz
+KNOBS=
+
+NAME=471.omnetpp-188B_4T
+TRACE=$(PYTHIA_HOME)/traces/471.omnetpp-188B.champsimtrace.xz $(PYTHIA_HOME)/traces/471.omnetpp-188B.champsimtrace.xz $(PYTHIA_HOME)/traces/471.omnetpp-188B.champsimtrace.xz $(PYTHIA_HOME)/traces/471.omnetpp-188B.champsimtrace.xz
+KNOBS=
+
+NAME=473.astar-359B_4T
+TRACE=$(PYTHIA_HOME)/traces/473.astar-359B.champsimtrace.xz $(PYTHIA_HOME)/traces/473.astar-359B.champsimtrace.xz $(PYTHIA_HOME)/traces/473.astar-359B.champsimtrace.xz $(PYTHIA_HOME)/traces/473.astar-359B.champsimtrace.xz
+KNOBS=
+
+NAME=483.xalancbmk-127B_4T
+TRACE=$(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz
+KNOBS=
+
+
+# =================== SPEC2017 ===================
+NAME=602.gcc_s-1850B_4T
+TRACE=$(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz $(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz $(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz $(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz
+KNOBS=
+
+NAME=605.mcf_s-994B_4T
+TRACE=$(PYTHIA_HOME)/traces/605.mcf_s-994B.champsimtrace.xz $(PYTHIA_HOME)/traces/605.mcf_s-994B.champsimtrace.xz $(PYTHIA_HOME)/traces/605.mcf_s-994B.champsimtrace.xz $(PYTHIA_HOME)/traces/605.mcf_s-994B.champsimtrace.xz
+KNOBS=
+
+NAME=620.omnetpp_s-141B_4T
+TRACE=$(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz $(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz $(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz $(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz
+KNOBS=
+
+
+# =================== ligra (graph processing) ===================
+NAME=ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M_4T
+TRACE=$(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
+KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
+
+NAME=ligra_PageRank.com-lj.ungraph.gcc_6.3.0_O3.drop_500M.length_250M_4T
+TRACE=$(PYTHIA_HOME)/traces/ligra_PageRank.com-lj.ungraph.gcc_6.3.0_O3.drop_500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_PageRank.com-lj.ungraph.gcc_6.3.0_O3.drop_500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_PageRank.com-lj.ungraph.gcc_6.3.0_O3.drop_500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_PageRank.com-lj.ungraph.gcc_6.3.0_O3.drop_500M.length_250M.champsimtrace.xz
+KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
+
+NAME=ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M_4T
+TRACE=$(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
+KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
+
+
+# =================== parsec (parallel benchmarks) ===================
+NAME=parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M_4T
+TRACE=$(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz
+KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
+
+NAME=parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M_4T
+TRACE=$(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz
+KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
+
+
+# =================== cloudsuite (datacenter workloads) ===================
+NAME=cassandra_phase0_core0_4T
+TRACE=$(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz
+KNOBS=knob_cloudsuite=true warmup_instructions=10000000 simulation_instructions=30000000
+
+NAME=nutch_phase0_core0_4T
+TRACE=$(PYTHIA_HOME)/traces/nutch_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/nutch_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/nutch_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/nutch_phase0_core0.trace.xz
+KNOBS=knob_cloudsuite=true warmup_instructions=10000000 simulation_instructions=30000000
+
+NAME=streaming_phase0_core1_4T
+TRACE=$(PYTHIA_HOME)/traces/streaming_phase0_core1.trace.xz $(PYTHIA_HOME)/traces/streaming_phase0_core1.trace.xz $(PYTHIA_HOME)/traces/streaming_phase0_core1.trace.xz $(PYTHIA_HOME)/traces/streaming_phase0_core1.trace.xz
+KNOBS=knob_cloudsuite=true warmup_instructions=10000000 simulation_instructions=30000000

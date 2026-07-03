@@ -1,0 +1,50 @@
+##############################################################
+##
+## This file contains reduced-scale experiments for course project.
+## Based on MICRO21_1C.exp with smaller warmup/simulation
+## and fewer DRAM bandwidth variations.
+##
+## Original: warmup=100M sim=500M + 7 DRAM bw points
+## Course:   warmup=10M  sim=50M  + 2 DRAM bw points
+##
+###############################################################
+
+
+# configurations
+BASE = --warmup_instructions=10000000 --simulation_instructions=50000000
+NOPREF = --config=$(PYTHIA_HOME)/config/nopref.ini
+SPP_DEV2 = --l2c_prefetcher_types=spp_dev2 --config=$(PYTHIA_HOME)/config/spp_dev2.ini
+MLOP = --l2c_prefetcher_types=mlop --config=$(PYTHIA_HOME)/config/mlop.ini
+BINGO = --l2c_prefetcher_types=bingo --config=$(PYTHIA_HOME)/config/bingo.ini
+DSPATCH = --l2c_prefetcher_types=dspatch --config=$(PYTHIA_HOME)/config/dspatch.ini
+SPP_PPF_DEV = --l2c_prefetcher_types=spp_ppf_dev --config=$(PYTHIA_HOME)/config/spp_ppf_dev.ini
+PYTHIA = --l2c_prefetcher_types=scooby --config=$(PYTHIA_HOME)/config/pythia.ini
+LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
+TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
+
+# Core experiments: baseline prefetcher comparison (single-core)
+nopref						$(BASE) $(NOPREF)
+spp						$(BASE) $(SPP_DEV2)
+bingo						$(BASE) $(BINGO)
+mlop						$(BASE) $(MLOP)
+pythia						$(BASE) $(PYTHIA)
+linucb						$(BASE) $(LINUCB)
+tsetlin						$(BASE) $(TSETLIN)
+
+
+# DRAM bandwidth sensitivity (reduced: only 2 representative points)
+nopref_MTPS600					$(BASE) $(NOPREF) --dram_io_freq=600
+spp_MTPS600					$(BASE) $(SPP_DEV2) --dram_io_freq=600
+bingo_MTPS600					$(BASE) $(BINGO) --dram_io_freq=600
+mlop_MTPS600					$(BASE) $(MLOP) --dram_io_freq=600
+pythia_MTPS600 					$(BASE) $(PYTHIA) --dram_io_freq=600
+linucb_MTPS600					$(BASE) $(LINUCB) --dram_io_freq=600
+tsetlin_MTPS600					$(BASE) $(TSETLIN) --dram_io_freq=600
+
+nopref_MTPS4800					$(BASE) $(NOPREF) --dram_io_freq=4800
+spp_MTPS4800					$(BASE) $(SPP_DEV2) --dram_io_freq=4800
+bingo_MTPS4800					$(BASE) $(BINGO) --dram_io_freq=4800
+mlop_MTPS4800					$(BASE) $(MLOP) --dram_io_freq=4800
+pythia_MTPS4800 				$(BASE) $(PYTHIA) --dram_io_freq=4800
+linucb_MTPS4800					$(BASE) $(LINUCB) --dram_io_freq=4800
+tsetlin_MTPS4800				$(BASE) $(TSETLIN) --dram_io_freq=4800
