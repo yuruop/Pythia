@@ -1,60 +1,39 @@
-##
-## Reduced trace list for course project (single-core).
-## Covers SPEC2006, SPEC2017, ligra, parsec, and cloudsuite
-## with ~18 representative traces (vs ~90+ in the full set).
-##
-## Selection strategy: 1-2 traces per benchmark, covering
-## diverse memory access patterns (streaming, random, graph, etc.)
-##
-
-# =================== SPEC2006 ===================
-# Integer benchmarks (compute & control intensive)
 NAME=403.gcc-16B
 TRACE=$(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz
 KNOBS=
 
-# Memory-intensive benchmarks
 NAME=429.mcf-184B
 TRACE=$(PYTHIA_HOME)/traces/429.mcf-184B.champsimtrace.xz
 KNOBS=
 
-# Floating-point benchmarks
 NAME=433.milc-127B
 TRACE=$(PYTHIA_HOME)/traces/433.milc-127B.champsimtrace.xz
 KNOBS=
 
-# ILP-heavy benchmarks
 NAME=450.soplex-247B
 TRACE=$(PYTHIA_HOME)/traces/450.soplex-247B.champsimtrace.xz
 KNOBS=
 
-# Quantum simulation (streaming-like)
 NAME=462.libquantum-1343B
 TRACE=$(PYTHIA_HOME)/traces/462.libquantum-1343B.champsimtrace.xz
 KNOBS=
 
-# Streaming FP
 NAME=470.lbm-1274B
 TRACE=$(PYTHIA_HOME)/traces/470.lbm-1274B.champsimtrace.xz
 KNOBS=
 
-# Network simulation (branch-heavy)
 NAME=471.omnetpp-188B
 TRACE=$(PYTHIA_HOME)/traces/471.omnetpp-188B.champsimtrace.xz
 KNOBS=
 
-# Pathfinding (irregular access)
 NAME=473.astar-359B
 TRACE=$(PYTHIA_HOME)/traces/473.astar-359B.champsimtrace.xz
 KNOBS=
 
-# XML processing (large working set)
 NAME=483.xalancbmk-127B
 TRACE=$(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz
 KNOBS=
 
-
-# =================== SPEC2017 ===================
 NAME=602.gcc_s-1850B
 TRACE=$(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz
 KNOBS=
@@ -67,8 +46,6 @@ NAME=620.omnetpp_s-141B
 TRACE=$(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz
 KNOBS=
 
-
-# =================== ligra (graph processing) ===================
 NAME=ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M
 TRACE=$(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
@@ -81,8 +58,6 @@ NAME=ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M
 TRACE=$(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
 
-
-# =================== parsec (parallel benchmarks) ===================
 NAME=parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M
 TRACE=$(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
@@ -91,8 +66,6 @@ NAME=parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M
 TRACE=$(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
 
-
-# =================== cloudsuite (datacenter workloads) ===================
 NAME=cassandra_phase0_core0
 TRACE=$(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz
 KNOBS=--knob_cloudsuite=true --warmup_instructions=10000000 --simulation_instructions=40000000

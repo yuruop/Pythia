@@ -1,10 +1,3 @@
-##
-## Reduced trace list for course project (four-core).
-## Same benchmark selection as course_1C.tlist, replicated 4x
-## for multi-core simulation.
-##
-
-# =================== SPEC2006 ===================
 NAME=403.gcc-16B_4T
 TRACE=$(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz $(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz $(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz $(PYTHIA_HOME)/traces/403.gcc-16B.champsimtrace.xz
 KNOBS=
@@ -41,8 +34,6 @@ NAME=483.xalancbmk-127B_4T
 TRACE=$(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz $(PYTHIA_HOME)/traces/483.xalancbmk-127B.champsimtrace.xz
 KNOBS=
 
-
-# =================== SPEC2017 ===================
 NAME=602.gcc_s-1850B_4T
 TRACE=$(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz $(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz $(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz $(PYTHIA_HOME)/traces/602.gcc_s-1850B.champsimtrace.xz
 KNOBS=
@@ -55,8 +46,6 @@ NAME=620.omnetpp_s-141B_4T
 TRACE=$(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz $(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz $(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz $(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz
 KNOBS=
 
-
-# =================== ligra (graph processing) ===================
 NAME=ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M_4T
 TRACE=$(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
 KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
@@ -69,8 +58,6 @@ NAME=ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M_4T
 TRACE=$(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
 KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
 
-
-# =================== parsec (parallel benchmarks) ===================
 NAME=parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M_4T
 TRACE=$(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz
 KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
@@ -79,8 +66,6 @@ NAME=parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M_4T
 TRACE=$(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz $(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz
 KNOBS=warmup_instructions=10000000 simulation_instructions=30000000
 
-
-# =================== cloudsuite (datacenter workloads) ===================
 NAME=cassandra_phase0_core0_4T
 TRACE=$(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz $(PYTHIA_HOME)/traces/cassandra_phase0_core0.trace.xz
 KNOBS=knob_cloudsuite=true warmup_instructions=10000000 simulation_instructions=30000000
