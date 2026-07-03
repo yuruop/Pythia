@@ -18,6 +18,12 @@
 
 using namespace std;
 
+// Maximum supported feature dimensionality for stack-allocated buffers.
+// Must be >= m_num_features.  Used in invoke_prefetcher() — the hot path —
+// to avoid heap allocation (new/delete) on every demand request.
+// Default: m_num_features=48 → int32_t[48] = 192 bytes on stack.
+static constexpr uint32_t MAX_FEATURES = 64;
+
 /* =========================================================================
  * TsetlinMachine Implementation
  * ========================================================================= */
@@ -35,7 +41,14 @@ TsetlinMachine::TsetlinMachine(const Config& cfg)
 {
     // Clauses per action (evenly distributed)
     m_clauses_per_action = m_num_clauses / m_num_actions;
-    assert(m_clauses_per_action >= 2 && "Need at least 2 clauses per action");
+    // Runtime check (not assert) — in Release/NDEBUG builds, assert is removed
+    // and the TM would silently degrade with zero clauses, all arrays size-0.
+    if (m_clauses_per_action < 2) {
+        cerr << "FATAL: Need at least 2 clauses per action, got "
+             << m_clauses_per_action << " (num_clauses=" << m_num_clauses
+             << ", num_actions=" << m_num_actions << ")" << endl;
+        abort();
+    }
 
     // Trim excess clauses: only keep clauses that are evenly distributable
     // across actions. Excess clauses have uninitialized metadata and cause
@@ -402,6 +415,11 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     // Create the Tsetlin Machine
     m_tm = new TsetlinMachine(tm_cfg);
 
+    // invoke_prefetcher() uses a stack-allocated features[MAX_FEATURES] buffer
+    // on the hot path to avoid heap allocation. Assert the bound holds.
+    assert(m_num_features <= MAX_FEATURES &&
+           "features buffer in invoke_prefetcher() limited to MAX_FEATURES");
+
     // Initialize last-offset tracking table
     for (uint32_t i = 0; i < LAST_OFFSET_TABLE_SIZE; i++) {
         m_last_offset_table[i].valid = false;
@@ -415,8 +433,12 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     // Assumption: m_num_features >= 17 (8 offset + 8 delta + 1 sign)
     m_temp_offset_bits = 8;
     m_temp_delta_bits  = 8;
+    // Guard against unsigned underflow: if m_num_features is too small,
+    // the subtraction would wrap around to a huge value, and the original
+    // assert(m_hash_feature_bits > 0) would pass spuriously on uint32_t.
+    assert(m_num_features >= m_temp_offset_bits + m_temp_delta_bits + 1
+           && "Need at least 17 features for hybrid encoding (8 offset + 8 delta + 1 sign)");
     m_hash_feature_bits = m_num_features - m_temp_offset_bits - m_temp_delta_bits - 1;
-    assert(m_hash_feature_bits > 0 && "Need at least 17 features for hybrid encoding");
 
     // Initialize stats (zero-init scalars; vectors resized below)
     m_stats.pt.lookup = 0; m_stats.pt.hit = 0; m_stats.pt.evict = 0; m_stats.pt.insert = 0;
@@ -580,7 +602,10 @@ void TsetlinPrefetcher::invoke_prefetcher(
     lot_entry.valid = true;
 
     // ---- Step 3: Generate features ----
-    int32_t* features = new int32_t[m_num_features];
+    // Stack-allocated to avoid heap allocation on the hot path (every demand
+    // request).  MAX_FEATURES is a generous upper bound (~256 bytes); the
+    // constructor asserts m_num_features <= MAX_FEATURES.
+    int32_t features[MAX_FEATURES];
     generate_features(pc, page, offset, delta, m_bw_level, features);
 
     // ---- Step 4: Predict action ----
@@ -648,7 +673,33 @@ void TsetlinPrefetcher::invoke_prefetcher(
                 }
             }
         } else {
+            // Out-of-bounds: the chosen action would cross a page boundary.
+            // Create a PT entry so the TM receives complete feedback —
+            // otherwise this (state, action) pair is a learning blind spot
+            // (never rewarded or penalized).  Out-of-bounds entries are
+            // treated as incorrect on eviction: the action was invalid.
             m_stats.predict.out_of_bounds++;
+            TMPrefetchTrackerEntry* entry =
+                new TMPrefetchTrackerEntry(0xdeadbeef, features,
+                                            action_index, m_num_features);
+            m_pt.push_back(entry);
+            m_stats.pt.insert++;
+
+            if (m_pt.size() > m_pt_size) {
+                TMPrefetchTrackerEntry* victim = m_pt.front();
+                m_pt.pop_front();
+                m_stats.pt.evict++;
+
+                if (!victim->has_reward) {
+                    // Out-of-bounds action → always incorrect (no useful prefetch)
+                    victim->reward_type = REWARD_INCORRECT;
+                    m_stats.reward.incorrect++;
+                    victim->reward = compute_reward(victim, victim->reward_type);
+                    victim->has_reward = true;
+                    train_from_reward(victim);
+                }
+                delete victim;
+            }
         }
     } else {
         // No prefetch: track decision
@@ -676,8 +727,7 @@ void TsetlinPrefetcher::invoke_prefetcher(
 
     m_stats.predict.action_dist[action_index]++;
     m_stats.predict.predicted += (pref_addr.size() - count_before);
-
-    delete[] features;
+    // features[] is stack-allocated — no delete needed.
 }
 
 /* -------------------------------------------------------------------------
@@ -706,11 +756,19 @@ void TsetlinPrefetcher::register_prefetch_hit(uint64_t address) {
  * Search PT for entries matching the given address
  * ------------------------------------------------------------------------- */
 vector<TMPrefetchTrackerEntry*> TsetlinPrefetcher::search_pt(uint64_t address) {
+    m_stats.pt.lookup++;
     vector<TMPrefetchTrackerEntry*> result;
     for (auto* entry : m_pt) {
+        // NOTE: address must be block-aligned (cache-line granularity) by the
+        // ChampSim framework. If the caller passes a raw byte address with
+        // sub-block offset bits set, this exact-match comparison will fail
+        // and the PT will appear empty, breaking the reward feedback loop.
         if (entry->address == address && !entry->has_reward) {
             result.push_back(entry);
         }
+    }
+    if (!result.empty()) {
+        m_stats.pt.hit++;
     }
     return result;
 }
@@ -732,9 +790,12 @@ int32_t TsetlinPrefetcher::compute_reward(
         case REWARD_UNTIMELY:  return high_bw ?  6 : 10;
         // High BW: wrong prefetches waste scarce BW → penalize harder
         case REWARD_INCORRECT: return high_bw ? -16 : -8;
-        // High BW: no-prefetch decision that aged out → small penalty
-        // (being conservative is less harmful when BW is tight)
-        case REWARD_NONE:      return high_bw ? -2  : -4;
+        // No-prefetch decisions age out without any demand access hitting the
+        // would-be-prefetched location.  Return 0 (neutral) to avoid creating a
+        // systematic bias against action 0.  The TM neither learns to prefer nor
+        // avoid no-prefetch — action 0 stays competitive as a fallback when all
+        // other actions are performing poorly.
+        case REWARD_NONE:      return 0;
         default:               return 0;
     }
 }
@@ -745,14 +806,30 @@ int32_t TsetlinPrefetcher::compute_reward(
  * Reward mapping to TM training:
  * - Timely/Untimely (>0): positive feedback → Type I for chosen action
  * - Incorrect (<0): negative feedback → Type II for chosen action
- * - None (action=0): treat as correct decision → Type I for action 0
- * - None (action!=0): treat as incorrect → Type II for chosen action
+ * - None (action=0): treat as correct restraint → Type I for action 0
+ *   (the PT entry aged out without any demand access hitting the
+ *    would-be-prefetched location — being conservative was the right call)
+ * - None (action!=0): this case should not occur in practice (REWARD_NONE
+ *   is only assigned to 0xdeadbeef entries created by action=0), but if it
+ *   does → treat as incorrect → Type II
  * ------------------------------------------------------------------------- */
 void TsetlinPrefetcher::train_from_reward(TMPrefetchTrackerEntry* entry) {
     m_stats.learn.called++;
 
     int32_t reward = entry->reward;
     uint32_t action = entry->action_index;
+    int32_t reward_type = entry->reward_type;
+
+    // Special case: REWARD_NONE means the no-prefetch (action=0) PT entry
+    // aged out without a demand access hitting the would-be-prefetched
+    // location.  This is "correct restraint" — give Type I feedback so the
+    // TM learns when conservatism is appropriate.
+    if (reward_type == REWARD_NONE && action == 0) {
+        m_tm->update(entry->features, action, true);
+        m_stats.learn.learned_positive++;
+        m_stats.reward.reward_per_action[reward_type][action]++;
+        return;
+    }
 
     if (reward > 0) {
         // Positive reward: reinforce the chosen action
@@ -767,8 +844,8 @@ void TsetlinPrefetcher::train_from_reward(TMPrefetchTrackerEntry* entry) {
     }
 
     // Track per-action reward distribution
-    if (entry->reward_type >= 0 && entry->reward_type < NUM_REWARD_TYPES) {
-        m_stats.reward.reward_per_action[entry->reward_type][action]++;
+    if (reward_type >= 0 && reward_type < NUM_REWARD_TYPES) {
+        m_stats.reward.reward_per_action[reward_type][action]++;
     }
 }
 

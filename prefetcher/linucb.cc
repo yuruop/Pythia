@@ -43,7 +43,13 @@ LinUCB::LinUCB(const Config& cfg)
 {
     // get_ucb_bonus() uses a fixed-size stack buffer (8 floats → 32 bytes).
     // If num_features ever exceeds 8, that buffer must be enlarged or made dynamic.
-    assert(m_num_features <= 8 && "get_ucb_bonus() stack buffer limited to 8 floats");
+    // Runtime check (not assert) — in Release/NDEBUG builds, assert is removed
+    // and get_ucb_bonus() would silently overflow its stack buffer.
+    if (m_num_features > 8) {
+        cerr << "FATAL: num_features " << m_num_features
+             << " exceeds get_ucb_bonus() stack buffer limit of 8" << endl;
+        abort();
+    }
 
     size_t d = m_num_features;
     size_t d2 = d * d;
@@ -307,9 +313,14 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     m_linucb = new LinUCB(cb_cfg);
 
     // invoke_prefetcher() uses a stack-allocated features[MAX_FEATURES] buffer
-    // on the hot path to avoid heap allocation. Assert the bound holds.
-    assert(m_num_features <= MAX_FEATURES &&
-           "features buffer in invoke_prefetcher() limited to MAX_FEATURES");
+    // on the hot path to avoid heap allocation. Runtime check (not assert) —
+    // in Release/NDEBUG builds, this would silently stack-overflow.
+    if (m_num_features > MAX_FEATURES) {
+        cerr << "FATAL: num_features " << m_num_features
+             << " exceeds invoke_prefetcher() stack buffer limit of "
+             << MAX_FEATURES << endl;
+        abort();
+    }
 
     // Initialize last-offset tracking table
     for (uint32_t i = 0; i < LAST_OFFSET_TABLE_SIZE; i++) {
@@ -676,7 +687,12 @@ int32_t ContextualBanditPrefetcher::compute_reward(
         case REWARD_TIMELY:    return high_bw ? 25 : 20;
         case REWARD_UNTIMELY:  return high_bw ?  6 : 10;
         case REWARD_INCORRECT: return high_bw ? -16 : -8;
-        case REWARD_NONE:      return high_bw ? -2  : -4;
+        // No-prefetch decisions age out without any demand access hitting the
+        // would-be-prefetched location.  Return 0 (neutral) to avoid creating
+        // a systematic bias against action 0 — the bandit neither learns to
+        // prefer nor avoid no-prefetch; action 0 stays competitive as a
+        // fallback when all other actions are performing poorly.
+        case REWARD_NONE:      return 0;
         default:               return 0;
     }
 }
@@ -697,6 +713,20 @@ void ContextualBanditPrefetcher::train_from_reward(CBPrefetchTrackerEntry* entry
 
     int32_t raw_reward = entry->reward;
     uint32_t action = entry->action_index;
+    int32_t reward_type = entry->reward_type;
+
+    // Special case: REWARD_NONE means the no-prefetch (action=0) PT entry
+    // aged out without a demand access hitting the would-be-prefetched
+    // location.  This is "correct restraint" — give a small positive reward
+    // so the bandit learns when conservatism is appropriate.
+    if (reward_type == REWARD_NONE && action == 0) {
+        // Small positive reward: +5 → scaled to +0.2 (mild reinforcement)
+        float scaled_reward = 5.0f / 25.0f;
+        m_linucb->update(entry->features, action, scaled_reward);
+        m_stats.learn.learned_positive++;
+        m_stats.reward.reward_per_action[reward_type][action]++;
+        return;
+    }
 
     if (raw_reward != 0) {
         // Scale reward to [-1, 1] range for numerical stability
@@ -715,8 +745,8 @@ void ContextualBanditPrefetcher::train_from_reward(CBPrefetchTrackerEntry* entry
     }
 
     // Track per-action reward distribution
-    if (entry->reward_type >= 0 && entry->reward_type < NUM_REWARD_TYPES) {
-        m_stats.reward.reward_per_action[entry->reward_type][action]++;
+    if (reward_type >= 0 && reward_type < NUM_REWARD_TYPES) {
+        m_stats.reward.reward_per_action[reward_type][action]++;
     }
 }
 
