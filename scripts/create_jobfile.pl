@@ -79,28 +79,76 @@ foreach $exp (@exp_info)
 	print "#    $exp_name: $exp_knobs\n";
 }
 print "#\n";
-print "#\n";
-print "#\n";
-print "#\n";
-
-foreach $trace (@trace_info)
+if($local)
 {
-	foreach $exp (@exp_info)
-	{
-		my $exp_name = $exp->{"NAME"};
-		my $exp_knobs = $exp->{"KNOBS"};
-		my $trace_name = $trace->{"NAME"};
-		my $trace_input = $trace->{"TRACE"};
-		my $trace_knobs = $trace->{"KNOBS"};
+	print "# Parallel execution: up to $ncores job(s) at a time\n";
+}
+print "#\n";
+print "#\n";
+print "#\n";
 
-		my $cmdline;
-		if($local)
+if($local)
+{
+	# --- Local mode: parallel job pool via bash for-loop (avoids xargs ARG_MAX limit) ---
+	my @cmds;
+	foreach $trace (@trace_info)
+	{
+		foreach $exp (@exp_info)
 		{
-			$cmdline = "$exe $exp_knobs $trace_knobs -traces $trace_input > ${trace_name}_${exp_name}.out 2>&1";
+			my $exp_name = $exp->{"NAME"};
+			my $exp_knobs = $exp->{"KNOBS"};
+			my $trace_name = $trace->{"NAME"};
+			my $trace_input = $trace->{"TRACE"};
+			my $trace_knobs = $trace->{"KNOBS"};
+
+			my $cmdline = "$exe $exp_knobs $trace_knobs -traces $trace_input > ${trace_name}_${exp_name}.out 2>&1";
+			$cmdline =~ s/\$\(PYTHIA_HOME\)/$ENV{'PYTHIA_HOME'}/g;
+			$cmdline =~ s/\$\(EXP\)/$exp_name/g;
+			$cmdline =~ s/\$\(TRACE\)/$trace_name/g;
+			$cmdline =~ s/\$\(NCORES\)/$ncores/g;
+			push @cmds, $cmdline;
 		}
-		else
+	}
+	my $cmd_count = scalar @cmds;
+	print "# Total jobs: $cmd_count\n\n";
+	print "MAX_PROCS=$ncores\n";
+	print "pids=()\n\n";
+
+	foreach my $c (@cmds)
+	{
+		# Escape single quotes for bash: replace ' with '\''
+		my $escaped = $c;
+		$escaped =~ s/'/'"'"'/g;
+		print "while [ \${#pids[\@]} -ge \$MAX_PROCS ]; do\n";
+		print "    for i in \"\${!pids[\@]}\"; do\n";
+		print "        if ! kill -0 \"\${pids[\$i]}\" 2>/dev/null; then\n";
+		print "            unset 'pids[\$i]'\n";
+		print "        fi\n";
+		print "    done\n";
+		print "    pids=(\"\${pids[\@]}\")\n";
+		print "    [ \${#pids[\@]} -ge \$MAX_PROCS ] && sleep 1\n";
+		print "done\n";
+		print "eval '$escaped' &\n";
+		print "pids+=(\$!)\n\n";
+	}
+	print "# Wait for remaining jobs to finish\n";
+	print "wait\n";
+	print "echo \"All jobs done.\"\n";
+}
+else
+{
+	# --- Slurm mode: sbatch is non-blocking, all jobs submitted simultaneously ---
+	foreach $trace (@trace_info)
+	{
+		foreach $exp (@exp_info)
 		{
-			$slurm_cmd = "sbatch -p $slurm_partition --mincpus=1";
+			my $exp_name = $exp->{"NAME"};
+			my $exp_knobs = $exp->{"KNOBS"};
+			my $trace_name = $trace->{"NAME"};
+			my $trace_input = $trace->{"TRACE"};
+			my $trace_knobs = $trace->{"KNOBS"};
+
+			my $slurm_cmd = "sbatch -p $slurm_partition --mincpus=1";
 			if (defined $include_list)
 			{
 				$slurm_cmd = $slurm_cmd." --nodelist=${include_nodes_list}";
@@ -114,15 +162,14 @@ foreach $trace (@trace_info)
 				$slurm_cmd = $slurm_cmd." $extra";
 			}
 			$slurm_cmd = $slurm_cmd." -c $ncores -J ${trace_name}_${exp_name} -o ${trace_name}_${exp_name}.out -e ${trace_name}_${exp_name}.err";
-			$cmdline = "$slurm_cmd $ENV{'PYTHIA_HOME'}/wrapper.sh $exe \"$exp_knobs $trace_knobs -traces $trace_input\"";
+			my $cmdline = "$slurm_cmd $ENV{'PYTHIA_HOME'}/wrapper.sh $exe \"$exp_knobs $trace_knobs -traces $trace_input\"";
+
+			$cmdline =~ s/\$\(PYTHIA_HOME\)/$ENV{'PYTHIA_HOME'}/g;
+			$cmdline =~ s/\$\(EXP\)/$exp_name/g;
+			$cmdline =~ s/\$\(TRACE\)/$trace_name/g;
+			$cmdline =~ s/\$\(NCORES\)/$ncores/g;
+
+			print "$cmdline\n";
 		}
-		
-		# Additional hook replace
-		$cmdline =~ s/\$\(PYTHIA_HOME\)/$ENV{'PYTHIA_HOME'}/g;
-		$cmdline =~ s/\$\(EXP\)/$exp_name/g;
-		$cmdline =~ s/\$\(TRACE\)/$trace_name/g;
-		$cmdline =~ s/\$\(NCORES\)/$ncores/g;
-		
-		print "$cmdline\n";
 	}
 }

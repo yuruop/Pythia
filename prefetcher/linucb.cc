@@ -21,6 +21,16 @@
 
 using namespace std;
 
+// Maximum supported feature dimensionality.
+// Must be >= m_num_features. Used for stack-allocated buffers on the hot path
+// to avoid heap allocation on every demand request.
+static constexpr uint32_t MAX_FEATURES = 16;
+
+// Maximum block offset within a page, derived from system constants.
+// Used for feature normalization — must match the bounds check in invoke_prefetcher().
+static constexpr float kMaxOffsetFloat =
+    (float)((1 << (LOG2_PAGE_SIZE - LOG2_BLOCK_SIZE)) - 1);
+
 /* =========================================================================
  * LinUCB Implementation
  * ========================================================================= */
@@ -30,8 +40,11 @@ LinUCB::LinUCB(const Config& cfg)
     , m_num_features(cfg.num_features)
     , m_alpha(cfg.alpha)
     , m_lambda(cfg.lambda_)
-    , m_rng(cfg.seed)
 {
+    // get_ucb_bonus() uses a fixed-size stack buffer (8 floats → 32 bytes).
+    // If num_features ever exceeds 8, that buffer must be enlarged or made dynamic.
+    assert(m_num_features <= 8 && "get_ucb_bonus() stack buffer limited to 8 floats");
+
     size_t d = m_num_features;
     size_t d2 = d * d;
     size_t total_mat = m_num_actions * d2;
@@ -140,6 +153,12 @@ uint32_t LinUCB::predict(const float* features) {
 
         float score = expected + conf_bound;
 
+        // Strict ">" (not ">=") means ties go to the lowest-index action.
+        // In cold start (all theta=0, all A_inv identical), this systematically
+        // favours action 0. The ε-greedy wrapper in ContextualBanditPrefetcher
+        // mitigates this by injecting random exploration. Ties become rare once
+        // any training has occurred because different actions receive different
+        // updates and their UCB bonuses diverge.
         if (score > best_score) {
             best_score = score;
             best_action = i;
@@ -159,6 +178,16 @@ uint32_t LinUCB::predict(const float* features) {
  * This is O(d²) per update — very efficient for small d.
  * ------------------------------------------------------------------------- */
 void LinUCB::update(const float* features, uint32_t action, float reward) {
+    // NOTE: Sherman-Morrison is an INCREMENTAL update operating in float32.
+    // Over very long runs (billions of accesses), the A_inv matrix may gradually
+    // lose positive-definiteness or symmetry due to accumulated round-off error.
+    // This is a known limitation of incremental inverse-covariance methods.
+    // Mitigations in place:
+    //   - fmaxf(xAx, 0.0f) guards against negative (numerically impossible) values
+    //   - theta is recomputed from A_inv * b each update (not incrementally),
+    //     preventing error propagation in the weight vector
+    // For production hardware, consider periodic full recomputation of A_inv
+    // from stored raw feature outer products, or use double precision for A_inv.
     uint32_t d = m_num_features;
     float* A_inv_i = m_A_inv + action * d * d;
     float* b_i     = m_b     + action * d;
@@ -277,6 +306,11 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     // Create the LinUCB engine
     m_linucb = new LinUCB(cb_cfg);
 
+    // invoke_prefetcher() uses a stack-allocated features[MAX_FEATURES] buffer
+    // on the hot path to avoid heap allocation. Assert the bound holds.
+    assert(m_num_features <= MAX_FEATURES &&
+           "features buffer in invoke_prefetcher() limited to MAX_FEATURES");
+
     // Initialize last-offset tracking table
     for (uint32_t i = 0; i < LAST_OFFSET_TABLE_SIZE; i++) {
         m_last_offset_table[i].valid = false;
@@ -360,12 +394,14 @@ void ContextualBanditPrefetcher::generate_features(
     // Feature 1: Page hash → [0, 1]
     features[1] = hash_to_float(page, 1);
 
-    // Feature 2: Block offset → [0, 1] (max 63 for 4KB page, 64B block)
-    features[2] = (float)offset / 63.0f;
+    // Feature 2: Block offset → [0, 1]
+    // kMaxOffsetFloat is derived from LOG2_PAGE_SIZE - LOG2_BLOCK_SIZE, keeping
+    // normalization consistent with the bounds check in invoke_prefetcher().
+    features[2] = (float)offset / kMaxOffsetFloat;
 
-    // Feature 3: Delta → [-1, 1] (clamped to ±63 for within-page strides)
-    float delta_clamped = fmaxf(-63.0f, fminf(63.0f, (float)delta));
-    features[3] = delta_clamped / 63.0f;
+    // Feature 3: Delta → [-1, 1] (clamped to within-page strides)
+    float delta_clamped = fmaxf(-kMaxOffsetFloat, fminf(kMaxOffsetFloat, (float)delta));
+    features[3] = delta_clamped / kMaxOffsetFloat;
 
     // Feature 4: Delta sign → {-1, 1}
     features[4] = (delta > 0) ? 1.0f : ((delta < 0) ? -1.0f : 0.0f);
@@ -448,7 +484,9 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     lot_entry.valid = true;
 
     // ---- Step 3: Generate features ----
-    float* features = new float[m_num_features];
+    // Stack-allocated to avoid heap allocation on the hot path (every demand request).
+    // MAX_FEATURES is a generous upper bound; m_num_features is asserted at construction.
+    float features[MAX_FEATURES];
     generate_features(pc, page, offset, delta, m_bw_level, features);
 
     // ---- Step 4: Predict action ----
@@ -456,7 +494,17 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
 
     uint32_t action_index;
     if (m_explore(m_rng)) {
-        // ε-exploration: random action
+        // ε-greedy exploration: random action.
+        //
+        // NOTE: this is intentionally layered ON TOP of LinUCB's native UCB
+        // exploration (the alpha * sqrt(x^T A_inv x) term). While theoretically
+        // redundant, the ε-greedy wrapper serves two practical purposes:
+        //   1. Cold-start tie-breaking: when all theta=0 and all A_inv identical,
+        //      the greedy argmax deterministically picks action 0. ε-greedy
+        //      ensures all actions get some initial trials.
+        //   2. Safety net: LinUCB's UCB can become overconfident if the linear
+        //      model assumptions are violated; ε-greedy guarantees a minimum
+        //      exploration rate regardless.
         action_index = m_action_gen(m_rng);
         m_stats.predict.explore++;
     } else {
@@ -515,7 +563,33 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
                 }
             }
         } else {
+            // Out-of-bounds: the chosen action would cross a page boundary.
+            // We still create a PT entry so the bandit receives complete feedback —
+            // otherwise this (state, action) pair is a learning blind spot (never
+            // rewarded or penalized). Out-of-bounds entries are treated as incorrect
+            // on eviction: the action was invalid in this context.
             m_stats.predict.out_of_bounds++;
+            CBPrefetchTrackerEntry* entry =
+                new CBPrefetchTrackerEntry(0xdeadbeef, features,
+                                            action_index, m_num_features);
+            m_pt.push_back(entry);
+            m_stats.pt.insert++;
+
+            if (m_pt.size() > m_pt_size) {
+                CBPrefetchTrackerEntry* victim = m_pt.front();
+                m_pt.pop_front();
+                m_stats.pt.evict++;
+
+                if (!victim->has_reward) {
+                    // Out-of-bounds action → always incorrect (no useful prefetch)
+                    victim->reward_type = REWARD_INCORRECT;
+                    m_stats.reward.incorrect++;
+                    victim->reward = compute_reward(victim, victim->reward_type);
+                    victim->has_reward = true;
+                    train_from_reward(victim);
+                }
+                delete victim;
+            }
         }
     } else {
         // No prefetch: track decision
@@ -543,8 +617,6 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
 
     m_stats.predict.action_dist[action_index]++;
     m_stats.predict.predicted += (pref_addr.size() - count_before);
-
-    delete[] features;
 }
 
 /* -------------------------------------------------------------------------
@@ -572,11 +644,19 @@ void ContextualBanditPrefetcher::register_prefetch_hit(uint64_t address) {
  * Search PT for entries matching the given address
  * ------------------------------------------------------------------------- */
 vector<CBPrefetchTrackerEntry*> ContextualBanditPrefetcher::search_pt(uint64_t address) {
+    m_stats.pt.lookup++;
     vector<CBPrefetchTrackerEntry*> result;
     for (auto* entry : m_pt) {
+        // NOTE: address must be block-aligned (cache-line granularity) by the
+        // ChampSim framework. If the caller passes a raw byte address with
+        // sub-block offset bits set, this exact-match comparison will fail
+        // and the PT will appear empty, breaking the reward feedback loop.
         if (entry->address == address && !entry->has_reward) {
             result.push_back(entry);
         }
+    }
+    if (!result.empty()) {
+        m_stats.pt.hit++;
     }
     return result;
 }

@@ -74,9 +74,6 @@ private:
     // Working buffers (pre-allocated to avoid hot-path allocation)
     float*  m_Ax;          // [num_features]  A_inv * x
 
-    // RNG
-    std::mt19937 m_rng;
-
 public:
     LinUCB(const Config& cfg);
     ~LinUCB();
