@@ -31,10 +31,17 @@ TsetlinMachine::TsetlinMachine(const Config& cfg)
     , m_threshold(cfg.threshold)
     , m_rng(cfg.seed)
     , m_dist(0.0f, 1.0f)
+    , m_neg_dist(0, cfg.num_actions > 1 ? cfg.num_actions - 1 : 0)
 {
     // Clauses per action (evenly distributed)
     m_clauses_per_action = m_num_clauses / m_num_actions;
     assert(m_clauses_per_action >= 2 && "Need at least 2 clauses per action");
+
+    // Trim excess clauses: only keep clauses that are evenly distributable
+    // across actions. Excess clauses have uninitialized metadata and cause
+    // out-of-bounds writes in sum_up_class_votes() when garbage action_class
+    // indices exceed m_num_actions.
+    m_num_clauses = m_clauses_per_action * m_num_actions;
 
     // Allocate and initialize TA state table
     // ta_state[clause][feature][2]: flattened to [clause * (features * 2)]
@@ -169,12 +176,14 @@ uint32_t TsetlinMachine::predict(const int32_t* features) {
  *   - random other action gets Type I feedback (explore alternative)
  * ------------------------------------------------------------------------- */
 void TsetlinMachine::update(const int32_t* features, uint32_t target_action, bool is_positive) {
-    // Pick a random "other" action for pairwise learning
-    uint32_t negative_action;
-    {
-        std::uniform_int_distribution<uint32_t> neg_dist(0, m_num_actions - 1);
+    // Pick a random "other" action for pairwise learning.
+    // When there is only one action class, pairwise discrimination is meaningless
+    // — just apply target-only feedback without a negative counterpart.
+    uint32_t negative_action = target_action;
+    bool has_negative = (m_num_actions > 1);
+    if (has_negative) {
         do {
-            negative_action = neg_dist(m_rng);
+            negative_action = m_neg_dist(m_rng);
         } while (negative_action == target_action);
     }
 
@@ -195,10 +204,12 @@ void TsetlinMachine::update(const int32_t* features, uint32_t target_action, boo
             if (skip_feedback((float)m_class_sum[target_action], 1)) continue;
             m_feedback_to_clauses[j] = (m_clause_info[j].polarity >= 0) ? 1 : -1;
         }
-        for (uint32_t j = m_action_clause_start[negative_action];
-             j < m_action_clause_start[negative_action] + m_clauses_per_action; j++) {
-            if (skip_feedback((float)m_class_sum[negative_action], -1)) continue;
-            m_feedback_to_clauses[j] = (m_clause_info[j].polarity >= 0) ? -1 : 1;
+        if (has_negative) {
+            for (uint32_t j = m_action_clause_start[negative_action];
+                 j < m_action_clause_start[negative_action] + m_clauses_per_action; j++) {
+                if (skip_feedback((float)m_class_sum[negative_action], -1)) continue;
+                m_feedback_to_clauses[j] = (m_clause_info[j].polarity >= 0) ? -1 : 1;
+            }
         }
     } else {
         // Negative: target gets Type II, other gets Type I (learn to avoid target)
@@ -207,10 +218,12 @@ void TsetlinMachine::update(const int32_t* features, uint32_t target_action, boo
             if (skip_feedback((float)m_class_sum[target_action], -1)) continue;
             m_feedback_to_clauses[j] = (m_clause_info[j].polarity >= 0) ? -1 : 1;
         }
-        for (uint32_t j = m_action_clause_start[negative_action];
-             j < m_action_clause_start[negative_action] + m_clauses_per_action; j++) {
-            if (skip_feedback((float)m_class_sum[negative_action], 1)) continue;
-            m_feedback_to_clauses[j] = (m_clause_info[j].polarity >= 0) ? 1 : -1;
+        if (has_negative) {
+            for (uint32_t j = m_action_clause_start[negative_action];
+                 j < m_action_clause_start[negative_action] + m_clauses_per_action; j++) {
+                if (skip_feedback((float)m_class_sum[negative_action], 1)) continue;
+                m_feedback_to_clauses[j] = (m_clause_info[j].polarity >= 0) ? 1 : -1;
+            }
         }
     }
 

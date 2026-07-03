@@ -86,8 +86,9 @@ private:
     int32_t*  m_feedback_to_clauses; // [num_clauses]  feedback type: +1 = Type I, -1 = Type II, 0 = none
 
     // ---------- RNG ----------
-    std::mt19937                          m_rng;
-    std::uniform_real_distribution<float> m_dist;  // [0.0, 1.0)
+    std::mt19937                            m_rng;
+    std::uniform_real_distribution<float>   m_dist;      // [0.0, 1.0)
+    std::uniform_int_distribution<uint32_t> m_neg_dist;  // pre-allocated for hot path
 
 public:
     TsetlinMachine(const Config& cfg);
