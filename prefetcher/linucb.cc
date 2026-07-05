@@ -24,7 +24,7 @@ using namespace std;
 // Maximum supported feature dimensionality.
 // Must be >= m_num_features. Used for stack-allocated buffers on the hot path
 // to avoid heap allocation on every demand request.
-static constexpr uint32_t MAX_FEATURES = 16;
+static constexpr uint32_t MAX_FEATURES = 32;  // P1.4: headroom for freq/conf
 
 // Maximum block offset within a page, derived from system constants.
 // Used for feature normalization — must match the bounds check in invoke_prefetcher().
@@ -399,29 +399,32 @@ inline float ContextualBanditPrefetcher::hash_to_float(uint64_t value, uint32_t 
 }
 
 /* -------------------------------------------------------------------------
- * Feature Generation: Program state → Continuous feature vector (6-8 dims)
+ * Feature Generation: Program state → Continuous feature vector (9-11 dims, P1.4)
  *
  * DESIGN RATIONALE:
  * Unlike the Tsetlin Machine which requires BINARY features, LinUCB naturally
- * handles REAL-VALUED features. This is a key advantage — we can encode
- * program state directly as normalized scalars without information loss from
- * binarization.
+ * handles REAL-VALUED features.  Optional features [9] and [10] are enabled
+ * by increasing linucb_num_features in the .ini config.
  *
- * Feature layout (default 8 dimensions):
- *   [0] PC hash                         → [0, 1]   (which code location)
- *   [1] Page hash                       → [0, 1]   (which data region)
- *   [2] Block offset (normalized)       → [0, 1]   (where in page)
- *   [3] Delta (normalized)              → [-1, 1]  (stride direction+magnitude)
- *   [4] Delta sign                      → {-1, 1}  (forward/backward)
- *   [5] BW level (normalized)           → [0, 1]   (memory pressure)
- *   [6] PC×Page interaction hash        → [0, 1]   (PC+page joint context)
- *   [7] Offset/Delta interaction        → [-1, 1]  (position+stride combo)
+ * Feature layout (default 9, extendable via num_features):
+ *   [0] PC hash                         → [0, 1]
+ *   [1] Page hash                       → [0, 1]
+ *   [2] Block offset (normalized)       → [0, 1]
+ *   [3] Delta (normalized)              → [-1, 1]
+ *   [4] Delta sign                      → {-1, 0, 1}
+ *   [5] BW level (normalized)           → [0, 1]
+ *   [6] PC×Page interaction hash        → [0, 1]
+ *   [7] Offset/Delta interaction        → [-1, 1]
+ *   [8] Delta signature (normalized)    → [0, 1]   (P1.3)
+ *   [9] Access frequency (normalized)   → [0, 1]   (P1.4, if num_features>9)
+ *   [10] Confidence feedback            → [0, 1]   (P1.4, if num_features>10)
  *
  * Computes: O(d) simple operations per invocation
  * ------------------------------------------------------------------------- */
 void ContextualBanditPrefetcher::generate_features(
         uint64_t pc, uint64_t page, uint32_t offset,
-        int32_t delta, uint8_t bw_level, float* features)
+        int32_t delta, uint8_t bw_level, uint32_t delta_sig,
+        uint32_t access_count, float last_confidence, float* features)
 {
     // Feature 0: PC hash → [0, 1]
     features[0] = hash_to_float(pc, 0);
@@ -455,8 +458,25 @@ void ContextualBanditPrefetcher::generate_features(
         float interaction = features[2] * features[3];
         features[7] = fmaxf(-1.0f, fminf(1.0f, interaction));
     }
-    // Additional features (if m_num_features > 8): just pad with zeros
-    for (uint32_t i = 8; i < m_num_features; i++) {
+    if (m_num_features > 8) {
+        // Feature 8: Delta signature → [0, 1] (P1.3 NEW)
+        // 12-bit shift-XOR hash of last 4 deltas (SPP-style encoding).
+        // Normalized by DELTA_SIG_MASK (0xFFF) to [0, 1].
+        features[8] = (float)(delta_sig & DELTA_SIG_MASK) / (float)DELTA_SIG_MASK;
+    }
+    if (m_num_features > 9) {
+        // Feature 9: Access frequency → [0, 1] (P1.4 NEW)
+        // Per-page saturating access count, normalized by 255.
+        features[9] = (float)access_count / 255.0f;
+    }
+    if (m_num_features > 10) {
+        // Feature 10: Confidence feedback → [0, 1] (P1.4 NEW)
+        // |expected_reward| from the last prediction on this page.
+        // Enables second-order reasoning for LinUCB as well.
+        features[10] = last_confidence;  // already in [0, 1]
+    }
+    // Additional features (if m_num_features > 11): just pad with zeros
+    for (uint32_t i = 11; i < m_num_features; i++) {
         features[i] = 0.0f;
     }
 }
@@ -507,13 +527,43 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     }
 
     // ---- Step 2: Compute real delta from last-offset tracking table ----
+    // Also maintains delta signature (P1.3), access count (P1.4), and
+    // confidence feedback (P1.4).
     uint32_t lot_idx = (uint32_t)(page & (LAST_OFFSET_TABLE_SIZE - 1));
     LastOffsetEntry& lot_entry = m_last_offset_table[lot_idx];
 
     int32_t delta = 0;
+    uint32_t delta_sig = 0;
+    uint32_t access_count = 0;
+    float    last_confidence = 0.0f;
+
     if (lot_entry.valid && lot_entry.page_tag == page) {
         delta = (int32_t)offset - lot_entry.last_offset;
+
+        // SPP-style delta signature update (P1.3)
+        int sig_delta = (delta < 0)
+            ? ((-delta) + (1 << (SIG_DELTA_BIT - 1)))
+            : delta;
+        lot_entry.delta_sig = ((lot_entry.delta_sig << DELTA_SIG_SHIFT)
+                               ^ (uint32_t)sig_delta) & DELTA_SIG_MASK;
+        lot_entry.delta_count++;
+
+        // P1.4: increment access count (saturating 8-bit counter)
+        if (lot_entry.access_count < 255) {
+            lot_entry.access_count++;
+        }
+    } else {
+        // First access to this page or page collision: reset all
+        // page-specific tracking fields to avoid leaking state from
+        // the previous page that occupied this slot.
+        lot_entry.access_count = 1;
+        lot_entry.delta_sig = 0;
+        lot_entry.last_confidence = 0.0f;
     }
+    delta_sig = lot_entry.delta_sig;
+    access_count = lot_entry.access_count;
+    last_confidence = lot_entry.last_confidence;
+
     lot_entry.page_tag = page;
     lot_entry.last_offset = (int32_t)offset;
     lot_entry.valid = true;
@@ -522,7 +572,8 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     // Stack-allocated to avoid heap allocation on the hot path (every demand request).
     // MAX_FEATURES is a generous upper bound; m_num_features is asserted at construction.
     float features[MAX_FEATURES];
-    generate_features(pc, page, offset, delta, m_bw_level, features);
+    generate_features(pc, page, offset, delta, m_bw_level, delta_sig,
+                      access_count, last_confidence, features);
 
     // ---- Step 4: Predict action ----
     m_stats.predict.called++;
@@ -549,6 +600,14 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     }
 
     assert(action_index < m_max_actions);
+
+    // ---- P1.4: Store confidence for next prediction on this page ----
+    // Confidence = |expected_reward| for the chosen action.
+    if (m_num_features > 10) {  // only when confidence feature is enabled
+        float conf = m_linucb->get_expected_reward(features, action_index);
+        if (conf < 0.0f) conf = -conf;  // absolute value
+        lot_entry.last_confidence = conf;
+    }
 
     // ---- Step 5: Issue prefetch or track no-prefetch ----
     uint32_t count_before = pref_addr.size();

@@ -218,12 +218,25 @@ private:
     // ---------- Last-offset tracking table (lightweight stride detection) ----------
     // Simple direct-mapped table: page → last offset seen.
     // Replaces the hardcoded delta=0 stub with real stride computation.
-    // Storage: 1024 entries × (8B tag + 4B offset + 1B valid) ≈ 13 KB
-    //         (compressible to ~3 KB with 16-bit page tag truncation)
+    // Storage: 1024 entries × (8B tag + 4B offset + 4B delta_sig + 4B delta_count + 1B valid) ≈ 21 KB
+    //         (compressible to ~6 KB with 16-bit page tag truncation)
     static constexpr uint32_t LAST_OFFSET_TABLE_SIZE = 1024;
+
+    // Delta signature constants (SPP-style encoding, P1.3)
+    // Encodes the last 4 deltas into a 12-bit running hash via shift-XOR.
+    // Each delta is encoded to 7-bit SPP format (sign-preserving) before mixing.
+    static constexpr uint32_t DELTA_SIG_BIT    = 12;
+    static constexpr uint32_t DELTA_SIG_SHIFT  = 3;
+    static constexpr uint32_t DELTA_SIG_MASK   = (1u << DELTA_SIG_BIT) - 1;  // 0xFFF
+    static constexpr uint32_t SIG_DELTA_BIT    = 7;
+
     struct LastOffsetEntry {
         uint64_t page_tag = 0;       // full page number for collision check
         int32_t  last_offset = -1;   // -1 = never written
+        uint32_t delta_sig = 0;      // running delta signature (shift-XOR hash, P1.3)
+        uint32_t delta_count = 0;    // number of deltas accumulated (P1.3)
+        uint32_t access_count = 0;   // saturating access counter, 0..255 (P1.4)
+        int32_t  last_confidence = 0;// vote margin from last prediction (P1.4)
         bool     valid = false;
     };
     LastOffsetEntry m_last_offset_table[LAST_OFFSET_TABLE_SIZE];
@@ -235,6 +248,10 @@ private:
     uint32_t m_temp_delta_bits;      // thermometer bits for delta magnitude (12 in P1.2)
     uint32_t m_interaction_bits;     // PC×Page interaction hash bits (4, NEW in P1.2)
     uint32_t m_temp_bw_bits;         // thermometer bits for BW level (2, NEW in P1.2)
+    uint32_t m_delta_sig_bits;       // bitwise bits for delta signature (12, NEW in P1.3)
+    uint32_t m_freq_bits;            // thermometer bits for access frequency (0=off, P1.4)
+    uint32_t m_conf_bits;            // thermometer bits for confidence feedback (0=off, P1.4)
+    int32_t  m_tm_threshold;         // TM voting threshold (for confidence max, P1.4)
     uint32_t m_hash_feature_bits;    // remaining bits for hash encoding
 
     // ---------- Epsilon-greedy annealing (P2.2) ----------
@@ -312,6 +329,9 @@ public:
                       uint32_t temp_delta_bits = 8,
                       uint32_t interaction_bits = 0,
                       uint32_t temp_bw_bits = 0,
+                      uint32_t delta_sig_bits = 12,
+                      uint32_t freq_bits = 0,
+                      uint32_t conf_bits = 0,
                       float epsilon_init = 0.005f,
                       uint64_t warmup_invocations = 0);
 
@@ -334,9 +354,11 @@ public:
     const char* get_reward_type_name(int32_t type) const;
 
 private:
-    // Generate binary features from program state
+    // Generate binary features from program state (P1.4: +freq/conf)
     void generate_features(uint64_t pc, uint64_t page, uint32_t offset,
-                           int32_t delta, uint8_t bw_level, int32_t* features);
+                           int32_t delta, uint8_t bw_level, uint32_t delta_sig,
+                           uint32_t access_count, int32_t last_confidence,
+                           int32_t* features);
 
     // Compute reward for a PT entry
     int32_t compute_reward(TMPrefetchTrackerEntry* entry, int32_t reward_type);

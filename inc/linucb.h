@@ -185,11 +185,23 @@ private:
     std::vector<int32_t> m_dyn_deg_values_hbw;     // high-BW variant degrees
 
     // ---------- Last-offset tracking table ----------
-    // Same lightweight stride detection as Tsetlin
+    // Same lightweight stride detection as Tsetlin.
+    // P1.3: extended with delta signature tracking.
     static constexpr uint32_t LAST_OFFSET_TABLE_SIZE = 1024;
+
+    // Delta signature constants (SPP-style encoding, P1.3)
+    static constexpr uint32_t DELTA_SIG_BIT    = 12;
+    static constexpr uint32_t DELTA_SIG_SHIFT  = 3;
+    static constexpr uint32_t DELTA_SIG_MASK   = (1u << DELTA_SIG_BIT) - 1;
+    static constexpr uint32_t SIG_DELTA_BIT    = 7;
+
     struct LastOffsetEntry {
         uint64_t page_tag = 0;
         int32_t  last_offset = -1;
+        uint32_t delta_sig = 0;      // running delta signature (P1.3)
+        uint32_t delta_count = 0;    // number of deltas accumulated (P1.3)
+        uint32_t access_count = 0;   // saturating access counter, 0..255 (P1.4)
+        float    last_confidence = 0.0f; // |expected_reward| from last prediction (P1.4)
         bool     valid = false;
     };
     LastOffsetEntry m_last_offset_table[LAST_OFFSET_TABLE_SIZE];
@@ -284,9 +296,11 @@ public:
     const char* get_reward_type_name(int32_t type) const;
 
 private:
-    // Generate continuous features from program state
+    // Generate continuous features from program state (P1.4: +freq/conf)
     void generate_features(uint64_t pc, uint64_t page, uint32_t offset,
-                           int32_t delta, uint8_t bw_level, float* features);
+                           int32_t delta, uint8_t bw_level, uint32_t delta_sig,
+                           uint32_t access_count, float last_confidence,
+                           float* features);
 
     // Hash a 64-bit value to a normalized float in [0, 1]
     inline float hash_to_float(uint64_t value, uint32_t seed) const;

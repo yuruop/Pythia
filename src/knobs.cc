@@ -273,7 +273,7 @@ namespace knob
 
 	/* Tsetlin Machine Prefetcher */
 	uint32_t tsetlin_num_clauses = 128;
-	uint32_t tsetlin_num_features = 64;
+	uint32_t tsetlin_num_features = 80;   // P1.3: 64→80 (+12 delta sig +4 headroom)
 	uint32_t tsetlin_num_actions = 15;
 	uint32_t tsetlin_num_states = 8;
 	float    tsetlin_s = 3.0;
@@ -283,6 +283,9 @@ namespace knob
 	uint32_t tsetlin_temp_delta_bits = 12;
 	uint32_t tsetlin_interaction_bits = 4;
 	uint32_t tsetlin_temp_bw_bits = 2;
+	uint32_t tsetlin_delta_sig_bits = 12;  // P1.3: bitwise delta signature features
+	uint32_t tsetlin_freq_bits = 0;        // P1.4: access frequency thermometer (0=off)
+	uint32_t tsetlin_conf_bits = 0;        // P1.4: confidence feedback thermometer (0=off)
 	uint32_t tsetlin_pt_size = 256;
 	uint32_t tsetlin_pref_degree = 1;
 	float    tsetlin_epsilon = 0.005;
@@ -298,7 +301,7 @@ namespace knob
 
 	/* Contextual Bandit (LinUCB) Prefetcher */
 	uint32_t linucb_num_actions = 15;
-	uint32_t linucb_num_features = 8;
+	uint32_t linucb_num_features = 9;    // P1.3: 8→9 (+delta signature feature)
 	float    linucb_alpha = 1.5;
 	float    linucb_lambda = 1.0;
 	uint64_t linucb_seed = 42;
@@ -1305,6 +1308,9 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "tsetlin_temp_delta_bits"))       { knob::tsetlin_temp_delta_bits = atoi(value); }
 		else if (MATCH("", "tsetlin_interaction_bits"))      { knob::tsetlin_interaction_bits = atoi(value); }
 		else if (MATCH("", "tsetlin_temp_bw_bits"))          { knob::tsetlin_temp_bw_bits = atoi(value); }
+		else if (MATCH("", "tsetlin_delta_sig_bits"))        { knob::tsetlin_delta_sig_bits = atoi(value); }
+		else if (MATCH("", "tsetlin_freq_bits"))             { knob::tsetlin_freq_bits = atoi(value); }
+		else if (MATCH("", "tsetlin_conf_bits"))             { knob::tsetlin_conf_bits = atoi(value); }
 		else if (MATCH("", "tsetlin_epsilon_init"))          { knob::tsetlin_epsilon_init = atof(value); }
 		else if (MATCH("", "tsetlin_warmup_invocations"))    { knob::tsetlin_warmup_invocations = atol(value); }
 

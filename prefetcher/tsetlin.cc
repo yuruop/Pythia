@@ -21,8 +21,8 @@ using namespace std;
 // Maximum supported feature dimensionality for stack-allocated buffers.
 // Must be >= m_num_features.  Used in invoke_prefetcher() — the hot path —
 // to avoid heap allocation (new/delete) on every demand request.
-// Default: m_num_features=48 → int32_t[48] = 192 bytes on stack.
-static constexpr uint32_t MAX_FEATURES = 64;
+// P1.3: increased 64→128 to accommodate delta signature bits and future expansion.
+static constexpr uint32_t MAX_FEATURES = 128;
 
 /* =========================================================================
  * TsetlinMachine Implementation
@@ -430,6 +430,9 @@ TsetlinPrefetcher::TsetlinPrefetcher(
         uint32_t temp_delta_bits,
         uint32_t interaction_bits,
         uint32_t temp_bw_bits,
+        uint32_t delta_sig_bits,
+        uint32_t freq_bits,
+        uint32_t conf_bits,
         float epsilon_init,
         uint64_t warmup_invocations)
     : Prefetcher(type)
@@ -468,26 +471,35 @@ TsetlinPrefetcher::TsetlinPrefetcher(
         m_last_offset_table[i].last_offset = -1;
     }
 
-    // ---- Enhanced feature bit allocation (P1.2) ----
-    // Layout with 64-bit default:
-    //   [0..hash_bits-1]:             hash(PC, page) — 37 bits
+    // ---- Enhanced feature bit allocation (P1.4: +freq/conf) ----
+    // Layout with 80-bit default (freq_bits=0, conf_bits=0):
+    //   [0..hash_bits-1]:             hash(PC, page) — 41 bits
     //   [hash_bits..+7]:              thermometer(offset) — 8 bits
-    //   [hash_bits+8..+8+delta-1]:    thermometer(|delta|) — 12 bits (was 8)
+    //   [hash_bits+8..+8+delta-1]:    thermometer(|delta|) — 12 bits
     //   [hash_bits+8+delta]:          delta sign — 1 bit
-    //   [hash_bits+9+delta..]:        PC×Page interaction hash — 4 bits (NEW)
-    //   [..end]:                       thermometer(bw_level) — 2 bits (NEW)
+    //   [..]:                          PC×Page interaction hash — 4 bits
+    //   [..]:                          thermometer(bw_level) — 2 bits
+    //   [..]:                          delta signature bitwise — 12 bits (P1.3)
+    //   [..]:                          thermometer(access_count) — 0-8 bits (P1.4)
+    //   [..]:                          thermometer(last_confidence) — 0-8 bits (P1.4)
     m_temp_offset_bits = 8;
     m_temp_delta_bits  = (temp_delta_bits >= 8) ? temp_delta_bits : 8;
     m_interaction_bits = interaction_bits;
     m_temp_bw_bits     = temp_bw_bits;
+    m_delta_sig_bits   = (delta_sig_bits <= DELTA_SIG_BIT) ? delta_sig_bits : DELTA_SIG_BIT;
+    m_freq_bits        = (freq_bits <= 8) ? freq_bits : 8;    // max 8 bits (256 levels)
+    m_conf_bits        = (conf_bits <= 8) ? conf_bits : 8;    // max 8 bits
+    m_tm_threshold     = (int32_t)tm_cfg.threshold;           // for confidence max
 
     uint32_t min_features = m_temp_offset_bits + m_temp_delta_bits + 1
-                          + m_interaction_bits + m_temp_bw_bits;
+                          + m_interaction_bits + m_temp_bw_bits
+                          + m_delta_sig_bits + m_freq_bits + m_conf_bits;
     assert(m_num_features >= min_features &&
            "num_features too small for configured feature bit allocation");
     m_hash_feature_bits = m_num_features - m_temp_offset_bits
                         - m_temp_delta_bits - 1
-                        - m_interaction_bits - m_temp_bw_bits;
+                        - m_interaction_bits - m_temp_bw_bits
+                        - m_delta_sig_bits - m_freq_bits - m_conf_bits;
 
     // Initialize stats (zero-init scalars; vectors resized below)
     m_stats.pt.lookup = 0; m_stats.pt.hit = 0; m_stats.pt.evict = 0; m_stats.pt.insert = 0;
@@ -522,29 +534,30 @@ TsetlinPrefetcher::~TsetlinPrefetcher() {
 }
 
 /* -------------------------------------------------------------------------
- * Feature Generation: Program state → Binary feature vector (P1.2 enhanced)
+ * Feature Generation: Program state → Binary feature vector (P1.4: +freq/conf)
  *
- * HYBRID ENCODING SCHEME (64-bit default):
- * - Categorical features (PC, page) → XOR-based hashing (37 bits)
- * - Ordinal features (offset) → thermometer encoding (8 bits)
- * - Ordinal features (delta) → thermometer encoding (12 bits, was 8)
- * - Delta sign → 1 bit
- * - PC×Page interaction → XOR hash (4 bits, NEW in P1.2)
- * - BW level → thermometer encoding (2 bits, NEW in P1.2)
+ * HYBRID ENCODING SCHEME (80-bit default, extendable via freq/conf bits):
+ * - Categorical features (PC, page) → XOR-based hashing
+ * - Ordinal features (offset, delta, bw, access_count, confidence) → thermometer
+ * - Hash features (PC×Page interaction, delta signature) → bitwise/hash
  *
- * Feature layout (64 bits):
- *   [0..hash_bits-1]                    : hash(PC, page)
- *   [hash_bits..+7]                     : thermometer(offset, 8 bits)
- *   [hash_bits+8..+8+delta_bits-1]      : thermometer(|delta|, 12 bits)
- *   [hash_bits+8+delta_bits]            : delta sign (1 = positive/zero)
- *   [next..next+interaction_bits-1]     : PC×Page interaction hash
- *   [last..last+bw_bits-1]              : thermometer(bw_level)
+ * Feature layout (80+ bits):
+ *   [hash]                               : hash(PC, page) — remainder bits
+ *   [..+7]                               : thermometer(offset, 8 bits)
+ *   [..+delta_bits-1]                    : thermometer(|delta|, 12 bits)
+ *   [..]                                 : delta sign — 1 bit
+ *   [..+interaction_bits-1]              : PC×Page interaction hash — 4 bits
+ *   [..+bw_bits-1]                       : thermometer(bw_level) — 2 bits
+ *   [..+delta_sig_bits-1]                : bitwise(delta_sig) — 12 bits (P1.3)
+ *   [..+freq_bits-1]                     : thermometer(access_count) — 0-8 bits (P1.4)
+ *   [..+conf_bits-1]                     : thermometer(last_confidence) — 0-8 bits (P1.4)
  *
  * All operations are integer bitwise or comparisons → hardware-friendly.
  * ------------------------------------------------------------------------- */
 void TsetlinPrefetcher::generate_features(
         uint64_t pc, uint64_t page, uint32_t offset,
-        int32_t delta, uint8_t bw_level, int32_t* features)
+        int32_t delta, uint8_t bw_level, uint32_t delta_sig,
+        uint32_t access_count, int32_t last_confidence, int32_t* features)
 {
     // ---- Part 1: Hash encoding for categorical features (PC, page) ----
     // BW level is no longer mixed into the hash — it gets its own
@@ -589,9 +602,9 @@ void TsetlinPrefetcher::generate_features(
     // Captures joint (PC, page) identity — different from the sum of individual
     // hashes because the interaction encodes which PC operates on which page.
     // This was the #1 missing feature vs LinUCB's feature [6].
+    feat_base += 1;  // skip sign bit
     if (m_interaction_bits > 0) {
         uint64_t interaction_base = pc ^ (page << 7) ^ 0xA5A5A5A5A5A5A5A5ULL;
-        feat_base += 1;  // skip sign bit
         for (uint32_t i = 0; i < m_interaction_bits; i++) {
             uint64_t h = interaction_base ^ ((uint64_t)i * 0x9E3779B97F4A7C15ULL);
             h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ULL;
@@ -599,20 +612,65 @@ void TsetlinPrefetcher::generate_features(
             h = h ^ (h >> 31);
             features[feat_base + i] = (int32_t)(h & 1);
         }
-    } else {
-        feat_base += 1;
     }
+    feat_base += m_interaction_bits;  // unconditionally skip interaction region
 
     // ---- Part 6: Thermometer encoding for BW level (P1.2 NEW) ----
     // DRAM_BW_LEVELS = 4 (0=idle, 1=low, 2=medium, 3=high).
     // Independent encoding so the TM can learn BW-aware rules like
     // "if BW is high AND stride is small → don't prefetch".
     if (m_temp_bw_bits > 0) {
-        feat_base += m_interaction_bits;
         uint32_t bw_max = 3;  // DRAM_BW_LEVELS - 1
         for (uint32_t i = 0; i < m_temp_bw_bits; i++) {
             int32_t threshold = (int32_t)((i + 1) * bw_max / m_temp_bw_bits);
             features[feat_base + i] = ((int32_t)bw_level >= threshold) ? 1 : 0;
+        }
+    }
+    feat_base += m_temp_bw_bits;  // unconditionally skip BW region (P1.3 fix)
+
+    // ---- Part 7: Delta signature bitwise encoding (P1.3 NEW) ----
+    // The delta signature is a 12-bit shift-XOR hash of the last 4 deltas.
+    // Since it's a hash value with no ordinal semantics (sig=0x1F and sig=0x20
+    // are semantically unrelated despite being numerically adjacent), we MUST
+    // use bitwise encoding (each bit is an independent feature) rather than
+    // thermometer encoding.  The TM learns which bit combinations correspond
+    // to specific delta-history patterns.
+    //
+    // Only the low DELTA_SIG_BIT bits of delta_sig carry information; higher
+    // bits are always zero (masked by DELTA_SIG_MASK).
+    if (m_delta_sig_bits > 0) {
+        for (uint32_t i = 0; i < m_delta_sig_bits; i++) {
+            features[feat_base + i] = (int32_t)((delta_sig >> i) & 1u);
+        }
+    }
+    feat_base += m_delta_sig_bits;  // unconditionally skip delta_sig region
+
+    // ---- Part 8: Access frequency thermometer encoding (P1.4 NEW) ----
+    // Per-page access count (saturating 8-bit counter, 0..255).  Hot pages may
+    // have different prefetch behavior than cold pages — the TM can learn rules
+    // like "if page is hot AND stride is large → multi-degree prefetch".
+    // Disabled by default (m_freq_bits=0); set to 4-8 to enable.
+    if (m_freq_bits > 0) {
+        uint32_t freq_max = 255;  // saturating 8-bit counter
+        for (uint32_t i = 0; i < m_freq_bits; i++) {
+            int32_t threshold = (int32_t)((i + 1) * freq_max / m_freq_bits);
+            features[feat_base + i] = ((int32_t)access_count >= threshold) ? 1 : 0;
+        }
+    }
+    feat_base += m_freq_bits;  // unconditionally skip freq region
+
+    // ---- Part 9: Confidence feedback thermometer encoding (P1.4 NEW) ----
+    // The TM's own vote margin from the last prediction on this page, fed back
+    // as input for the current prediction.  This enables "second-order reasoning":
+    // the TM can learn rules conditioned on its own certainty, e.g.:
+    //   "IF delta_sig matches AND confidence_was_high → prefetch aggressively"
+    //   "IF delta_sig matches AND confidence_was_low  → be conservative"
+    // Disabled by default (m_conf_bits=0); set to 3-5 to enable.
+    if (m_conf_bits > 0) {
+        int32_t conf_max = 2 * m_tm_threshold;  // max vote margin [0, 2T]
+        for (uint32_t i = 0; i < m_conf_bits; i++) {
+            int32_t threshold = (int32_t)((i + 1) * conf_max / m_conf_bits);
+            features[feat_base + i] = (last_confidence >= threshold) ? 1 : 0;
         }
     }
 }
@@ -664,14 +722,45 @@ void TsetlinPrefetcher::invoke_prefetcher(
     }
 
     // ---- Step 2: Compute real delta from last-offset tracking table ----
+    // Also maintains delta signature (P1.3), access count (P1.4), and
+    // confidence feedback (P1.4).
     uint32_t lot_idx = (uint32_t)(page & (LAST_OFFSET_TABLE_SIZE - 1));
     LastOffsetEntry& lot_entry = m_last_offset_table[lot_idx];
 
     int32_t delta = 0;
+    uint32_t delta_sig = 0;
+    uint32_t access_count = 0;
+    int32_t  last_confidence = 0;
+
     if (lot_entry.valid && lot_entry.page_tag == page) {
         // Hit: same page as last access → compute true stride
         delta = (int32_t)offset - lot_entry.last_offset;
+
+        // SPP-style delta signature update (P1.3)
+        int sig_delta = (delta < 0)
+            ? ((-delta) + (1 << (SIG_DELTA_BIT - 1)))
+            : delta;
+        lot_entry.delta_sig = ((lot_entry.delta_sig << DELTA_SIG_SHIFT)
+                               ^ (uint32_t)sig_delta) & DELTA_SIG_MASK;
+        lot_entry.delta_count++;
+
+        // P1.4: increment access count (saturating 8-bit counter)
+        if (lot_entry.access_count < 255) {
+            lot_entry.access_count++;
+        }
+    } else {
+        // First access to this page or page collision: reset all
+        // page-specific tracking fields to avoid leaking state from
+        // the previous page that occupied this slot.
+        lot_entry.access_count = 1;
+        lot_entry.delta_sig = 0;
+        lot_entry.last_confidence = 0;
     }
+    // Snapshot current values for feature generation
+    delta_sig = lot_entry.delta_sig;
+    access_count = lot_entry.access_count;
+    last_confidence = lot_entry.last_confidence;  // from LAST prediction (P1.4)
+
     // Always update the table for next access (within-page stride tracking)
     lot_entry.page_tag = page;
     lot_entry.last_offset = (int32_t)offset;
@@ -679,10 +768,11 @@ void TsetlinPrefetcher::invoke_prefetcher(
 
     // ---- Step 3: Generate features ----
     // Stack-allocated to avoid heap allocation on the hot path (every demand
-    // request).  MAX_FEATURES is a generous upper bound (~256 bytes); the
-    // constructor asserts m_num_features <= MAX_FEATURES.
+    // request).  MAX_FEATURES is a generous upper bound; the constructor
+    // asserts m_num_features <= MAX_FEATURES.
     int32_t features[MAX_FEATURES];
-    generate_features(pc, page, offset, delta, m_bw_level, features);
+    generate_features(pc, page, offset, delta, m_bw_level, delta_sig,
+                      access_count, last_confidence, features);
 
     // ---- Step 4: Predict action ----
     m_stats.predict.called++;
@@ -713,6 +803,17 @@ void TsetlinPrefetcher::invoke_prefetcher(
     }
 
     assert(action_index < m_max_actions);
+
+    // ---- P1.4: Store confidence for next prediction on this page ----
+    // Enables second-order reasoning: the TM's own certainty becomes a feature
+    // for the next decision on the same page.  Confidence = vote margin.
+    if (m_conf_bits > 0) {
+        int32_t best_sum   = m_tm->get_class_sum(action_index);
+        int32_t second_sum = m_tm->get_second_best_class_sum();
+        int32_t conf = best_sum - second_sum;
+        if (conf < 0) conf = 0;
+        lot_entry.last_confidence = conf;
+    }
 
     // ---- Step 5: Issue prefetch or track no-prefetch ----
     uint32_t count_before = pref_addr.size();
@@ -1094,6 +1195,9 @@ void TsetlinPrefetcher::print_config() {
     cout << "  - delta thermometer   " << m_temp_delta_bits << " bits (+ 1 sign bit)" << endl;
     cout << "  - PCxPage interaction " << m_interaction_bits << " bits (P1.2)" << endl;
     cout << "  - BW thermometer      " << m_temp_bw_bits << " bits (P1.2)" << endl;
+    cout << "  - Delta signature     " << m_delta_sig_bits << " bits (P1.3)" << endl;
+    cout << "  - Access frequency    " << m_freq_bits << " bits (P1.4)" << endl;
+    cout << "  - Confidence feedback " << m_conf_bits << " bits (P1.4)" << endl;
     cout << "tsetlin_num_actions " << m_max_actions << endl;
     cout << "tsetlin_actions ";
     for (size_t i = 0; i < m_actions.size(); i++) {
