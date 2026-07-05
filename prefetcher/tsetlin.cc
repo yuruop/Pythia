@@ -460,9 +460,15 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     m_tm = new TsetlinMachine(tm_cfg);
 
     // invoke_prefetcher() uses a stack-allocated features[MAX_FEATURES] buffer
-    // on the hot path to avoid heap allocation. Assert the bound holds.
-    assert(m_num_features <= MAX_FEATURES &&
-           "features buffer in invoke_prefetcher() limited to MAX_FEATURES");
+    // on the hot path to avoid heap allocation. Runtime check (not assert) —
+    // in Release/NDEBUG builds, assert is removed and the stack overflow
+    // would silently corrupt memory.
+    if (m_num_features > MAX_FEATURES) {
+        cerr << "FATAL: num_features " << m_num_features
+             << " exceeds invoke_prefetcher() stack buffer limit of "
+             << MAX_FEATURES << endl;
+        abort();
+    }
 
     // Initialize last-offset tracking table
     for (uint32_t i = 0; i < LAST_OFFSET_TABLE_SIZE; i++) {
@@ -748,6 +754,22 @@ void TsetlinPrefetcher::invoke_prefetcher(
         if (lot_entry.access_count < 255) {
             lot_entry.access_count++;
         }
+
+        // P1.5: maintain chaos score — EMA of delta irregularity
+        // High chaos_score → random/irregular access pattern → suppress prefetch
+        // Low chaos_score → stable/regular stride → prefetch is safe
+        {
+            int32_t delta_change = (delta > lot_entry.last_delta)
+                ? (delta - lot_entry.last_delta)
+                : (lot_entry.last_delta - delta);
+            // Scale delta change to [0, 255] range (max delta in a page is ~63)
+            uint32_t change_scaled = (uint32_t)delta_change * 4;  // *4 ≈ /16 for 0..63 range
+            if (change_scaled > 255) change_scaled = 255;
+            // EMA: 7/8 old + 1/8 new
+            lot_entry.chaos_score = (uint8_t)(
+                ((uint32_t)lot_entry.chaos_score * 7 + change_scaled) / 8);
+        }
+        lot_entry.last_delta = delta;
     } else {
         // First access to this page or page collision: reset all
         // page-specific tracking fields to avoid leaking state from
@@ -755,6 +777,8 @@ void TsetlinPrefetcher::invoke_prefetcher(
         lot_entry.access_count = 1;
         lot_entry.delta_sig = 0;
         lot_entry.last_confidence = 0;
+        lot_entry.chaos_score = 0;    // P1.5: reset chaos on new page
+        lot_entry.last_delta = delta; // P1.5
     }
     // Snapshot current values for feature generation
     delta_sig = lot_entry.delta_sig;
@@ -773,6 +797,19 @@ void TsetlinPrefetcher::invoke_prefetcher(
     int32_t features[MAX_FEATURES];
     generate_features(pc, page, offset, delta, m_bw_level, delta_sig,
                       access_count, last_confidence, features);
+
+    // ---- Step 3.5: Chaos suppression (P1.5) ----
+    // Detect random/irregular access patterns by monitoring the EMA of
+    // delta changes.  When chaos_score exceeds the threshold, the access
+    // pattern is likely not prefetch-friendly (e.g., pointer chasing in mcf).
+    // Suppress prefetch to avoid cache pollution — this is the #1 failure
+    // mode on traces where Tsetlin issues many useless prefetches.
+    //
+    // Only activate after a few accesses to the same page (delta_count >= 3)
+    // so the chaos estimate has enough samples to be reliable.
+    static constexpr uint8_t CHAOS_THRESHOLD = 96;  // ~3/8 of max 255
+    bool is_chaotic = (lot_entry.delta_count >= 3 &&
+                       lot_entry.chaos_score > CHAOS_THRESHOLD);
 
     // ---- Step 4: Predict action ----
     m_stats.predict.called++;
@@ -803,6 +840,17 @@ void TsetlinPrefetcher::invoke_prefetcher(
     }
 
     assert(action_index < m_max_actions);
+
+    // P1.5: Chaos suppression — force no-prefetch on irregular access patterns.
+    // This overrides the TM's prediction when the access pattern is too random.
+    // The TM continues to train normally (features are still generated with the
+    // chosen action), so it still learns from chaos-suppressed decisions.
+    if (is_chaotic && m_actions[action_index] != 0) {
+        // Find the no-prefetch action index (action delta == 0)
+        for (uint32_t i = 0; i < m_max_actions; i++) {
+            if (m_actions[i] == 0) { action_index = i; break; }
+        }
+    }
 
     // ---- P1.4: Store confidence for next prediction on this page ----
     // Enables second-order reasoning: the TM's own certainty becomes a feature

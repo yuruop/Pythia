@@ -327,7 +327,22 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     , m_rng(seed)
     , m_explore(epsilon)
     , m_action_gen(0, m_max_actions - 1)
+    , m_dist(0.0f, 1.0f)
+    , m_reward_head(0)
+    , m_reward_sum(0.0f)
+    , m_reward_count(0.0f)
+    , m_no_pref_action_idx(0)
 {
+    // Initialize reward ring buffer
+    for (uint32_t i = 0; i < REWARD_WINDOW; i++) {
+        m_reward_ring[i] = 0.0f;
+    }
+
+    // Cache the index of action=0 for fast no-prefetch suppression
+    for (uint32_t i = 0; i < m_max_actions; i++) {
+        if (m_actions[i] == 0) { m_no_pref_action_idx = i; break; }
+    }
+
     // Create the LinUCB engine
     m_linucb = new LinUCB(cb_cfg);
 
@@ -399,14 +414,14 @@ inline float ContextualBanditPrefetcher::hash_to_float(uint64_t value, uint32_t 
 }
 
 /* -------------------------------------------------------------------------
- * Feature Generation: Program state → Continuous feature vector (9-11 dims, P1.4)
+ * Feature Generation: Program state → Continuous feature vector (9-13 dims, P1.5)
  *
  * DESIGN RATIONALE:
  * Unlike the Tsetlin Machine which requires BINARY features, LinUCB naturally
- * handles REAL-VALUED features.  Optional features [9] and [10] are enabled
+ * handles REAL-VALUED features.  Optional features [9]-[12] are enabled
  * by increasing linucb_num_features in the .ini config.
  *
- * Feature layout (default 9, extendable via num_features):
+ * Feature layout (default 11, extendable via num_features):
  *   [0] PC hash                         → [0, 1]
  *   [1] Page hash                       → [0, 1]
  *   [2] Block offset (normalized)       → [0, 1]
@@ -418,13 +433,16 @@ inline float ContextualBanditPrefetcher::hash_to_float(uint64_t value, uint32_t 
  *   [8] Delta signature (normalized)    → [0, 1]   (P1.3)
  *   [9] Access frequency (normalized)   → [0, 1]   (P1.4, if num_features>9)
  *   [10] Confidence feedback            → [0, 1]   (P1.4, if num_features>10)
+ *   [11] Stride streak (normalized)     → [0, 1]   (P1.5, if num_features>11)
+ *   [12] Delta variance EMA (norm.)     → [0, 1]   (P1.5, if num_features>12)
  *
  * Computes: O(d) simple operations per invocation
  * ------------------------------------------------------------------------- */
 void ContextualBanditPrefetcher::generate_features(
         uint64_t pc, uint64_t page, uint32_t offset,
         int32_t delta, uint8_t bw_level, uint32_t delta_sig,
-        uint32_t access_count, float last_confidence, float* features)
+        uint32_t access_count, float last_confidence,
+        uint8_t stride_streak, float* features)
 {
     // Feature 0: PC hash → [0, 1]
     features[0] = hash_to_float(pc, 0);
@@ -475,8 +493,25 @@ void ContextualBanditPrefetcher::generate_features(
         // Enables second-order reasoning for LinUCB as well.
         features[10] = last_confidence;  // already in [0, 1]
     }
-    // Additional features (if m_num_features > 11): just pad with zeros
-    for (uint32_t i = 11; i < m_num_features; i++) {
+    if (m_num_features > 11) {
+        // Feature 11: Stride streak → [0, 1] (P1.5 NEW)
+        // Consecutive accesses with the same delta.  High streak means a
+        // stable, predictable stride — ideal for multi-degree prefetch.
+        // Low streak means irregular access pattern → be conservative.
+        // Normalized by max expected streak (16).
+        features[11] = (float)stride_streak / 16.0f;
+        if (features[11] > 1.0f) features[11] = 1.0f;
+    }
+    if (m_num_features > 12) {
+        // Feature 12: Delta variance EMA → [0, 1] (P1.5 NEW)
+        // Not computed here — the caller passes 0 when num_features <= 12.
+        // When enabled, the LastOffsetEntry tracks an EMA of
+        // |delta - prev_delta| / 64, providing a direct "chaos" signal.
+        // Placeholder: set in invoke_prefetcher via a separate field.
+        features[12] = 0.0f;
+    }
+    // Additional features (if m_num_features > 13): just pad with zeros
+    for (uint32_t i = 13; i < m_num_features; i++) {
         features[i] = 0.0f;
     }
 }
@@ -536,6 +571,7 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     uint32_t delta_sig = 0;
     uint32_t access_count = 0;
     float    last_confidence = 0.0f;
+    uint8_t  stride_streak = 0;       // P1.5
 
     if (lot_entry.valid && lot_entry.page_tag == page) {
         delta = (int32_t)offset - lot_entry.last_offset;
@@ -552,6 +588,16 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         if (lot_entry.access_count < 255) {
             lot_entry.access_count++;
         }
+
+        // P1.5: track stride streak (consecutive same-delta count)
+        if (delta == lot_entry.last_delta) {
+            if (lot_entry.stride_streak < 255) {
+                lot_entry.stride_streak++;
+            }
+        } else {
+            lot_entry.stride_streak = 1;
+        }
+        lot_entry.last_delta = delta;
     } else {
         // First access to this page or page collision: reset all
         // page-specific tracking fields to avoid leaking state from
@@ -559,10 +605,13 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         lot_entry.access_count = 1;
         lot_entry.delta_sig = 0;
         lot_entry.last_confidence = 0.0f;
+        lot_entry.stride_streak = 0;     // P1.5
+        lot_entry.last_delta = delta;    // P1.5
     }
     delta_sig = lot_entry.delta_sig;
     access_count = lot_entry.access_count;
     last_confidence = lot_entry.last_confidence;
+    stride_streak = lot_entry.stride_streak;  // P1.5
 
     lot_entry.page_tag = page;
     lot_entry.last_offset = (int32_t)offset;
@@ -573,7 +622,7 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     // MAX_FEATURES is a generous upper bound; m_num_features is asserted at construction.
     float features[MAX_FEATURES];
     generate_features(pc, page, offset, delta, m_bw_level, delta_sig,
-                      access_count, last_confidence, features);
+                      access_count, last_confidence, stride_streak, features);
 
     // ---- Step 4: Predict action ----
     m_stats.predict.called++;
@@ -600,6 +649,34 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     }
 
     assert(action_index < m_max_actions);
+
+    // ---- P1.5: Adaptive aggressiveness check ----
+    // If the bandit has been consistently receiving negative rewards (i.e.,
+    // the recent average reward is below threshold), the current access pattern
+    // is likely not prefetch-friendly.  Force the no-prefetch action to avoid
+    // polluting the cache with useless prefetches (this is the core issue on
+    // traces like mcf where LinUCB issues 20M prefetches at 7% accuracy).
+    //
+    // The reward window must be sufficiently populated before suppression
+    // activates (avoids false positives during cold start).
+    if (m_reward_count > (float)REWARD_WINDOW * 0.5f &&  // at least half-full
+        m_actions[action_index] != 0)                    // not already no-pref
+    {
+        float recent_avg = m_reward_sum / m_reward_count;
+        // Scaled reward range: TIMELY≈+0.8, UNTIMELY≈+0.4, INCORRECT≈-0.32
+        // Threshold of -0.05 means "net negative on average"
+        if (recent_avg < -0.05f) {
+            // Strongly negative: force no-prefetch deterministically
+            action_index = m_no_pref_action_idx;
+        } else if (recent_avg < 0.02f) {
+            // Mildly negative/neutral: force no-prefetch probabilistically
+            // Probability scales with how negative the trend is
+            float prob = (0.02f - recent_avg) / 0.07f;  // [0, 1] range
+            if (m_dist(m_rng) < prob) {
+                action_index = m_no_pref_action_idx;
+            }
+        }
+    }
 
     // ---- P1.4: Store confidence for next prediction on this page ----
     // Confidence = |expected_reward| for the chosen action.
@@ -827,6 +904,15 @@ void ContextualBanditPrefetcher::train_from_reward(CBPrefetchTrackerEntry* entry
         // Scale reward to [-1, 1] range for numerical stability
         // Timely=+20 → +0.8, Untimely=+10 → +0.4, Incorrect=-8 → -0.32, etc.
         float scaled_reward = (float)raw_reward / 25.0f;
+
+        // P1.5: Track reward in sliding window for adaptive aggressiveness
+        m_reward_sum -= m_reward_ring[m_reward_head];
+        m_reward_ring[m_reward_head] = scaled_reward;
+        m_reward_sum += scaled_reward;
+        m_reward_head = (m_reward_head + 1) % REWARD_WINDOW;
+        if (m_reward_count < (float)REWARD_WINDOW) {
+            m_reward_count += 1.0f;
+        }
 
         m_linucb->update(entry->features, action, scaled_reward);
 

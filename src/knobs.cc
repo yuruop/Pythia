@@ -273,10 +273,10 @@ namespace knob
 
 	/* Tsetlin Machine Prefetcher */
 	uint32_t tsetlin_num_clauses = 128;
-	uint32_t tsetlin_num_features = 80;   // P1.3: 64→80 (+12 delta sig +4 headroom)
+	uint32_t tsetlin_num_features = 88;   // P1.5: 80→88 (+4 freq +4 conf)
 	uint32_t tsetlin_num_actions = 15;
 	uint32_t tsetlin_num_states = 8;
-	float    tsetlin_s = 3.0;
+	float    tsetlin_s = 10.0;             // P1.5: 3.0→10.0 (+1.8% on mcf sweep)
 	int32_t  tsetlin_threshold = 8;
 	uint64_t tsetlin_seed = 42;
 	vector<int32_t> tsetlin_actions;
@@ -284,11 +284,11 @@ namespace knob
 	uint32_t tsetlin_interaction_bits = 4;
 	uint32_t tsetlin_temp_bw_bits = 2;
 	uint32_t tsetlin_delta_sig_bits = 12;  // P1.3: bitwise delta signature features
-	uint32_t tsetlin_freq_bits = 0;        // P1.4: access frequency thermometer (0=off)
-	uint32_t tsetlin_conf_bits = 0;        // P1.4: confidence feedback thermometer (0=off)
+	uint32_t tsetlin_freq_bits = 4;        // P1.5: enabled, access frequency thermometer
+	uint32_t tsetlin_conf_bits = 4;        // P1.5: enabled, confidence feedback thermometer
 	uint32_t tsetlin_pt_size = 256;
 	uint32_t tsetlin_pref_degree = 1;
-	float    tsetlin_epsilon = 0.005;
+	float    tsetlin_epsilon = 0.01;       // P1.5: 0.005→0.01 (better in sweep)
 	float    tsetlin_epsilon_init = 0.05;
 	uint64_t tsetlin_warmup_invocations = 100000;
 	uint32_t tsetlin_high_bw_thresh = 3;
@@ -301,14 +301,14 @@ namespace knob
 
 	/* Contextual Bandit (LinUCB) Prefetcher */
 	uint32_t linucb_num_actions = 15;
-	uint32_t linucb_num_features = 9;    // P1.3: 8→9 (+delta signature feature)
-	float    linucb_alpha = 1.5;
-	float    linucb_lambda = 1.0;
+	uint32_t linucb_num_features = 11;   // P1.5: 9→11 (+freq +confidence features)
+	float    linucb_alpha = 5.0;          // P1.5: 1.5→5.0 (curious combo +12.5% on mcf)
+	float    linucb_lambda = 0.1;         // P1.5: 1.0→0.1 (curious combo, best in sweep)
 	uint64_t linucb_seed = 42;
 	vector<int32_t> linucb_actions;
-	uint32_t linucb_pt_size = 256;
+	uint32_t linucb_pt_size = 512;        // P1.5: 256→512 (better in sweep)
 	uint32_t linucb_pref_degree = 1;
-	float    linucb_epsilon = 0.005;
+	float    linucb_epsilon = 0.01;       // P1.5: 0.005→0.01 (curious combo)
 	uint32_t linucb_high_bw_thresh = 3;
 	uint32_t linucb_rng_seed = 42;
 	bool     linucb_enable_dyn_degree = false;

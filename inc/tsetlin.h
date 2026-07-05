@@ -237,6 +237,8 @@ private:
         uint32_t delta_count = 0;    // number of deltas accumulated (P1.3)
         uint32_t access_count = 0;   // saturating access counter, 0..255 (P1.4)
         int32_t  last_confidence = 0;// vote margin from last prediction (P1.4)
+        int32_t  last_delta = 0;     // most recent delta value (P1.5)
+        uint8_t  chaos_score = 0;    // delta irregularity EMA, 0=stable 255=random (P1.5)
         bool     valid = false;
     };
     LastOffsetEntry m_last_offset_table[LAST_OFFSET_TABLE_SIZE];

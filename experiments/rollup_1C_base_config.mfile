@@ -3,3 +3,8 @@ Core_0_LLC_total_miss : sum
 Core_0_LLC_load_miss : sum
 Core_0_LLC_RFO_miss : sum
 Core_0_LLC_writeback_miss : sum
+Core_0_L2C_prefetch_issued : sum
+Core_0_L2C_prefetch_useful : sum
+Core_0_L2C_prefetch_late : sum
+Core_0_L2C_prefetch_filled : sum
+Core_0_L2C_load_miss : sum

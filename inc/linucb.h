@@ -202,6 +202,8 @@ private:
         uint32_t delta_count = 0;    // number of deltas accumulated (P1.3)
         uint32_t access_count = 0;   // saturating access counter, 0..255 (P1.4)
         float    last_confidence = 0.0f; // |expected_reward| from last prediction (P1.4)
+        int32_t  last_delta = 0;     // most recent delta value (P1.5)
+        uint8_t  stride_streak = 0;  // consecutive same-delta count (P1.5)
         bool     valid = false;
     };
     LastOffsetEntry m_last_offset_table[LAST_OFFSET_TABLE_SIZE];
@@ -209,10 +211,24 @@ private:
     // ---------- Exploration ----------
     float    m_epsilon;
 
+    // ---------- Adaptive aggressiveness (P1.5) ----------
+    // Tracks a sliding window of recent scaled rewards to detect when the
+    // bandit is consistently receiving negative feedback — a sign that the
+    // current access pattern is not prefetch-friendly (e.g., random pointer
+    // chasing).  When the recent average reward drops below a threshold,
+    // the prefetcher increases its bias toward the "no-prefetch" action.
+    static constexpr uint32_t REWARD_WINDOW = 256;
+    float  m_reward_ring[REWARD_WINDOW];    // sliding window of recent rewards
+    uint32_t m_reward_head;                 // ring buffer write position
+    float  m_reward_sum;                    // running sum for O(1) average
+    float  m_reward_count;                  // number of samples accumulated
+    uint32_t m_no_pref_action_idx;          // cached index of action=0
+
     // ---------- RNG ----------
     std::mt19937                          m_rng;
     std::bernoulli_distribution           m_explore;
     std::uniform_int_distribution<int32_t> m_action_gen;
+    std::uniform_real_distribution<float> m_dist;  // P1.5: for adaptive agg
 
     // ---------- Statistics ----------
     struct {
@@ -296,11 +312,11 @@ public:
     const char* get_reward_type_name(int32_t type) const;
 
 private:
-    // Generate continuous features from program state (P1.4: +freq/conf)
+    // Generate continuous features from program state (P1.5: +stride_streak)
     void generate_features(uint64_t pc, uint64_t page, uint32_t offset,
                            int32_t delta, uint8_t bw_level, uint32_t delta_sig,
                            uint32_t access_count, float last_confidence,
-                           float* features);
+                           uint8_t stride_streak, float* features);
 
     // Hash a 64-bit value to a normalized float in [0, 1]
     inline float hash_to_float(uint64_t value, uint32_t seed) const;
