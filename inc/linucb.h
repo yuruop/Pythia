@@ -190,10 +190,10 @@ private:
     static constexpr uint32_t LAST_OFFSET_TABLE_SIZE = 1024;
 
     // Delta signature constants (SPP-style encoding, P1.3)
-    static constexpr uint32_t DELTA_SIG_BIT    = 12;
-    static constexpr uint32_t DELTA_SIG_SHIFT  = 3;
-    static constexpr uint32_t DELTA_SIG_MASK   = (1u << DELTA_SIG_BIT) - 1;
-    static constexpr uint32_t SIG_DELTA_BIT    = 7;
+    static constexpr uint32_t DELTA_SIG_BIT      = 12;
+    static constexpr uint32_t DELTA_SIG_SHIFT    = 3;
+    static constexpr uint32_t DELTA_SIG_MASK     = (1u << DELTA_SIG_BIT) - 1;
+    static constexpr uint32_t SPP_DELTA_ENC_BIT  = 7;   // SPP-style per-delta encoding width
 
     struct LastOffsetEntry {
         uint64_t page_tag = 0;

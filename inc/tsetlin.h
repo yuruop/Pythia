@@ -225,10 +225,10 @@ private:
     // Delta signature constants (SPP-style encoding, P1.3)
     // Encodes the last 4 deltas into a 12-bit running hash via shift-XOR.
     // Each delta is encoded to 7-bit SPP format (sign-preserving) before mixing.
-    static constexpr uint32_t DELTA_SIG_BIT    = 12;
-    static constexpr uint32_t DELTA_SIG_SHIFT  = 3;
-    static constexpr uint32_t DELTA_SIG_MASK   = (1u << DELTA_SIG_BIT) - 1;  // 0xFFF
-    static constexpr uint32_t SIG_DELTA_BIT    = 7;
+    static constexpr uint32_t DELTA_SIG_BIT      = 12;
+    static constexpr uint32_t DELTA_SIG_SHIFT    = 3;
+    static constexpr uint32_t DELTA_SIG_MASK     = (1u << DELTA_SIG_BIT) - 1;  // 0xFFF
+    static constexpr uint32_t SPP_DELTA_ENC_BIT  = 7;   // SPP-style per-delta encoding width
 
     struct LastOffsetEntry {
         uint64_t page_tag = 0;       // full page number for collision check

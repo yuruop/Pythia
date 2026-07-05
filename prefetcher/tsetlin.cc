@@ -738,7 +738,7 @@ void TsetlinPrefetcher::invoke_prefetcher(
 
         // SPP-style delta signature update (P1.3)
         int sig_delta = (delta < 0)
-            ? ((-delta) + (1 << (SIG_DELTA_BIT - 1)))
+            ? ((-delta) + (1 << (SPP_DELTA_ENC_BIT - 1)))
             : delta;
         lot_entry.delta_sig = ((lot_entry.delta_sig << DELTA_SIG_SHIFT)
                                ^ (uint32_t)sig_delta) & DELTA_SIG_MASK;
