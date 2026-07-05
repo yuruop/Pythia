@@ -86,3 +86,17 @@ linucb_greedy				$(BASE) $(LINUCB) --linucb_alpha=0.5 --linucb_epsilon=0.001 --l
 
 # Curious: high alpha, high epsilon, weak regularization → explore-heavy
 linucb_curious				$(BASE) $(LINUCB) --linucb_alpha=5.0 --linucb_epsilon=0.01 --linucb_lambda=0.1
+
+# =========================================================================
+# Feature Dimension Sweep (P1.3 + P1.4)
+#   Default: num_features=9 (8 base + 1 delta_signature)
+# =========================================================================
+
+# Baseline without delta signature (num_features=8): original 8-dim continuous
+linucb_feat8				$(BASE) $(LINUCB) --linucb_num_features=8
+
+# With access frequency feature (num_features=10): + per-page saturation counter → [0,1]
+linucb_feat10				$(BASE) $(LINUCB) --linucb_num_features=10
+
+# Full features with confidence feedback (num_features=11): +10 + last-confidence → [0,1]
+linucb_feat11				$(BASE) $(LINUCB) --linucb_num_features=11

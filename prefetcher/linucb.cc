@@ -41,13 +41,13 @@ LinUCB::LinUCB(const Config& cfg)
     , m_alpha(cfg.alpha)
     , m_lambda(cfg.lambda_)
 {
-    // get_ucb_bonus() uses a fixed-size stack buffer (8 floats → 32 bytes).
-    // If num_features ever exceeds 8, that buffer must be enlarged or made dynamic.
+    // get_ucb_bonus() uses a stack-allocated working buffer of MAX_FEATURES floats.
     // Runtime check (not assert) — in Release/NDEBUG builds, assert is removed
     // and get_ucb_bonus() would silently overflow its stack buffer.
-    if (m_num_features > 8) {
+    if (m_num_features > MAX_FEATURES) {
         cerr << "FATAL: num_features " << m_num_features
-             << " exceeds get_ucb_bonus() stack buffer limit of 8" << endl;
+             << " exceeds get_ucb_bonus() stack buffer limit of "
+             << MAX_FEATURES << endl;
         abort();
     }
 
@@ -243,9 +243,9 @@ float LinUCB::get_ucb_bonus(const float* features, uint32_t action) const {
     uint32_t d = m_num_features;
     const float* A_inv_i = m_A_inv + action * d * d;
 
-    // Use stack-local working buffer (d ≤ 8 → ~32 bytes max)
+    // Use stack-local working buffer (d ≤ MAX_FEATURES → up to 128 bytes)
     // Avoids const_cast and keeps this method truly const / thread-safe
-    float work[8];  // max num_features = 8 for current config
+    float work[MAX_FEATURES];  // P1.4: expanded from 8 to MAX_FEATURES for freq/conf features
     for (uint32_t r = 0; r < d; r++) {
         float sum = 0.0f;
         for (uint32_t c = 0; c < d; c++) {

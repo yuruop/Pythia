@@ -105,3 +105,39 @@ tsetlin_large_precise			$(BASE) $(TSETLIN) --tsetlin_num_clauses=256 --tsetlin_s
 
 # High exploration combo: high epsilon + extended warmup
 tsetlin_explore_hi			$(BASE) $(TSETLIN) --tsetlin_epsilon=0.01 --tsetlin_epsilon_init=0.1 --tsetlin_warmup_invocations=200000
+
+# =========================================================================
+# Feature Engineering Sweep (P1.2 + P1.3)
+# =========================================================================
+
+# Delta Signature features: disable (0) vs fewer bits (8)
+#   Default: 12 bits of SPP-style shift-XOR delta signature
+tsetlin_dsig0				$(BASE) $(TSETLIN) --tsetlin_delta_sig_bits=0
+tsetlin_dsig8				$(BASE) $(TSETLIN) --tsetlin_delta_sig_bits=8
+
+# PC×Page interaction bits: more (default: 4)
+tsetlin_inter8				$(BASE) $(TSETLIN) --tsetlin_interaction_bits=8
+
+# BW thermometer bits: finer encoding (default: 2)
+tsetlin_bw4				$(BASE) $(TSETLIN) --tsetlin_temp_bw_bits=4
+
+# Delta thermometer bits: fewer vs finer (default: 12)
+tsetlin_td8				$(BASE) $(TSETLIN) --tsetlin_temp_delta_bits=8
+tsetlin_td16				$(BASE) $(TSETLIN) --tsetlin_temp_delta_bits=16
+
+# =========================================================================
+# Advanced Features Sweep (P1.4) — Access Frequency & Confidence Feedback
+#   Requires increasing num_features to accommodate new bits:
+#     freq_bits=4 → needs 4 extra features  (80→84)
+#     conf_bits=4 → needs 4 extra features  (84→88)
+#   Default: both OFF (freq_bits=0, conf_bits=0)
+# =========================================================================
+
+# Enable access frequency thermometer (4 bits) → second-order: hot pages
+tsetlin_freq4				$(BASE) $(TSETLIN) --tsetlin_freq_bits=4 --tsetlin_num_features=84
+
+# Enable confidence feedback thermometer (4 bits) → second-order: meta-cognition
+tsetlin_conf4				$(BASE) $(TSETLIN) --tsetlin_conf_bits=4 --tsetlin_num_features=84
+
+# Enable both freq + conf (full second-order reasoning)
+tsetlin_freq4_conf4			$(BASE) $(TSETLIN) --tsetlin_freq_bits=4 --tsetlin_conf_bits=4 --tsetlin_num_features=88
