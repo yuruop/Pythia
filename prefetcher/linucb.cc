@@ -719,7 +719,7 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
 
                     // Compute reward for evicted entry
                     if (!victim->has_reward) {
-                        if (victim->address == 0xdeadbeef) {
+                        if (victim->is_sentinel) {
                             victim->reward_type = REWARD_NONE;
                             m_stats.reward.no_pref++;
                         } else {
@@ -894,6 +894,18 @@ void ContextualBanditPrefetcher::train_from_reward(CBPrefetchTrackerEntry* entry
     if (reward_type == REWARD_NONE && action == 0) {
         // Small positive reward: +5 → scaled to +0.2 (mild reinforcement)
         float scaled_reward = 5.0f / 25.0f;
+
+        // P1.5 FIX: update sliding window BEFORE training, so the adaptive
+        // aggressiveness check sees "correct restraint" rewards as well.
+        // Previously the early return skipped the ring buffer entirely,
+        // causing recent_avg to stay negative when bandit correctly chose
+        // action=0 → over-suppression feedback loop.
+        m_reward_sum -= m_reward_ring[m_reward_head];
+        m_reward_ring[m_reward_head] = scaled_reward;
+        m_reward_sum += scaled_reward;
+        m_reward_head = (m_reward_head + 1) % REWARD_WINDOW;
+        if (m_reward_count < (float)REWARD_WINDOW) m_reward_count += 1.0f;
+
         m_linucb->update(entry->features, action, scaled_reward);
         m_stats.learn.learned_positive++;
         m_stats.reward.reward_per_action[reward_type][action]++;
@@ -974,14 +986,22 @@ uint32_t ContextualBanditPrefetcher::get_dyn_pref_degree(
     }
 
     float expected = m_linucb->get_expected_reward(features, action_index);
-    // Clamp to a reasonable range: [0, 1].  In early training (before θ
-    // converges), expected_reward can oscillate wildly.  Clamping prevents a
-    // single noisy prediction from triggering degree=6 on garbage features.
-    // Upper bound of 1.0 is a sensible maximum for the normalized feature
-    // space used by this prefetcher (all features in [-1, 1] or [0, 1]).
+    // Clamp to a reasonable range to prevent a single noisy prediction
+    // from triggering max degree on garbage features during early training.
+    //
+    // Lower bound: 0.0 (negative expected_reward for the chosen action is
+    // pathological — shouldn't happen after training, but defensive).
+    //
+    // Upper bound: m_num_features * 0.5.  With d features in [-1,1] and
+    // L2-regularized theta, |expected_reward| = |θ^T x| rarely exceeds d/2.
+    // The old [0,1] clamp collapsed all well-trained predictions into one
+    // bucket, making dynamic degree regulation ineffective once the bandit
+    // converged.  This looser bound preserves differentiation between
+    // moderately-confident (conf≈1.5) and highly-confident (conf≈3.0) states.
     float conf = (expected < 0.0f) ? -expected : expected;  // abs()
     if (conf < 0.0f) conf = 0.0f;
-    if (conf > 1.0f) conf = 1.0f;
+    float conf_max = (float)m_num_features * 0.5f;
+    if (conf > conf_max) conf = conf_max;
 
     const vector<int32_t>& thresholds = is_high_bw()
         ? m_dyn_deg_thresh_hbw : m_dyn_deg_thresh;
@@ -992,9 +1012,14 @@ uint32_t ContextualBanditPrefetcher::get_dyn_pref_degree(
         return 1;  // no thresholds configured → conservative
     }
 
-    // Thresholds are stored as integers but represent float confidence levels
-    // multiplied by 100 (e.g., threshold=30 means conf=0.30).
-    int32_t conf_scaled = (int32_t)(conf * 100.0f);
+    // Thresholds are stored as integers representing confidence levels
+    // multiplied by 100 (e.g., threshold=30 means conf=0.30 on a [0,1] scale).
+    // Normalize conf back to [0,1] before scaling, because conf_max may be
+    // larger than 1.0 (e.g., d*0.5 = 5.5 for 11 features). Without this
+    // normalization, conf_scaled could reach 550 and permanently overshoot
+    // all thresholds, making dynamic degree regulation ineffective.
+    float conf_normalized = conf / conf_max;
+    int32_t conf_scaled = (int32_t)(conf_normalized * 100.0f);
 
     for (size_t i = 0; i < thresholds.size() && i < degrees.size(); i++) {
         if (conf_scaled <= thresholds[i]) {

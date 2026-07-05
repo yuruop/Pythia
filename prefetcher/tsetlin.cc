@@ -758,7 +758,13 @@ void TsetlinPrefetcher::invoke_prefetcher(
         // P1.5: maintain chaos score — EMA of delta irregularity
         // High chaos_score → random/irregular access pattern → suppress prefetch
         // Low chaos_score → stable/regular stride → prefetch is safe
-        {
+        //
+        // BUGFIX: skip chaos update on the first delta after a page transition
+        // (delta_count == 1).  On a new page, last_delta was seeded to 0 by
+        // the miss branch, so the first delta_change = |real_delta - 0| is
+        // always non-zero even for perfectly regular strides, causing a
+        // spurious chaos_score bump.
+        if (lot_entry.delta_count > 1) {
             int32_t delta_change = (delta > lot_entry.last_delta)
                 ? (delta - lot_entry.last_delta)
                 : (lot_entry.last_delta - delta);
@@ -776,6 +782,8 @@ void TsetlinPrefetcher::invoke_prefetcher(
         // the previous page that occupied this slot.
         lot_entry.access_count = 1;
         lot_entry.delta_sig = 0;
+        lot_entry.delta_count = 0;     // BUGFIX: must reset to avoid chaos suppression
+                                        // false-positive on new pages (P1.5)
         lot_entry.last_confidence = 0;
         lot_entry.chaos_score = 0;    // P1.5: reset chaos on new page
         lot_entry.last_delta = delta; // P1.5
@@ -901,7 +909,7 @@ void TsetlinPrefetcher::invoke_prefetcher(
 
                     // Compute reward for evicted entry (incorrect or no_pref)
                     if (!victim->has_reward) {
-                        if (victim->address == 0xdeadbeef) {
+                        if (victim->is_sentinel) {
                             victim->reward_type = REWARD_NONE;
                             m_stats.reward.no_pref++;
                         } else {

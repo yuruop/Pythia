@@ -151,17 +151,19 @@ private:
 
 class TMPrefetchTrackerEntry {
 public:
-    uint64_t  address;         // prefetched address (0xdeadbeef = no-prefetch)
+    uint64_t  address;         // prefetched address (0xdeadbeef = no-prefetch sentinel)
     int32_t*  features;        // snapshot of binary features at prediction time
     uint32_t  action_index;    // chosen action
     bool      is_filled;       // did the prefetched line arrive in cache?
     bool      has_reward;      // has the reward been assigned?
+    bool      is_sentinel;     // true → this entry represents no-prefetch or OOB
     int32_t   reward;          // reward value (0 = not yet assigned)
     int32_t   reward_type;     // 0=timely, 1=untimely, 2=incorrect, 3=none
 
     TMPrefetchTrackerEntry(uint64_t addr, const int32_t* feat, uint32_t act, uint32_t num_feat)
         : address(addr), action_index(act), is_filled(false),
-          has_reward(false), reward(0), reward_type(-1)
+          has_reward(false), is_sentinel(addr == 0xdeadbeef),
+          reward(0), reward_type(-1)
     {
         features = new int32_t[num_feat];
         memcpy(features, feat, num_feat * sizeof(int32_t));
