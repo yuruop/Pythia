@@ -331,6 +331,7 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     , m_reward_head(0)
     , m_reward_sum(0.0f)
     , m_reward_count(0.0f)
+    , m_positive_sum(0.0f)         // P1.6
     , m_no_pref_action_idx(0)
 {
     // Initialize reward ring buffer
@@ -373,6 +374,8 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     m_stats.reward.incorrect = 0; m_stats.reward.no_pref = 0;
     m_stats.learn.called = 0; m_stats.learn.learned_positive = 0;
     m_stats.learn.learned_negative = 0; m_stats.learn.learn_skipped_no_reward = 0;
+    m_stats.suppress.called = 0; m_stats.suppress.suppressed = 0;        // P1.6
+    m_stats.suppress.suppressed_prob = 0; m_stats.suppress.suppressed_escape = 0;  // P1.6
     m_stats.register_fill.called = 0; m_stats.register_fill.set = 0;
 
     m_stats.predict.action_dist.resize(m_max_actions, 0);
@@ -628,6 +631,7 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     m_stats.predict.called++;
 
     uint32_t action_index;
+    bool is_exploit = false;  // P1.6(c): track for suppression bypass
     if (m_explore(m_rng)) {
         // ε-greedy exploration: random action.
         //
@@ -640,42 +644,82 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         //   2. Safety net: LinUCB's UCB can become overconfident if the linear
         //      model assumptions are violated; ε-greedy guarantees a minimum
         //      exploration rate regardless.
+        //   3. P1.6: random probes are NEVER suppressed by adaptive
+        //      aggressiveness — they are the mechanism for breaking deadlocks.
         action_index = m_action_gen(m_rng);
         m_stats.predict.explore++;
     } else {
         // Exploit: use LinUCB prediction
         action_index = m_linucb->predict(features);
         m_stats.predict.exploit++;
+        is_exploit = true;
     }
 
     assert(action_index < m_max_actions);
 
-    // ---- P1.5: Adaptive aggressiveness check ----
-    // If the bandit has been consistently receiving negative rewards (i.e.,
-    // the recent average reward is below threshold), the current access pattern
-    // is likely not prefetch-friendly.  Force the no-prefetch action to avoid
-    // polluting the cache with useless prefetches (this is the core issue on
-    // traces like mcf where LinUCB issues 20M prefetches at 7% accuracy).
+    // ---- P1.6: Adaptive aggressiveness check (fixed) ----
     //
-    // The reward window must be sufficiently populated before suppression
-    // activates (avoids false positives during cold start).
-    if (m_reward_count > (float)REWARD_WINDOW * 0.5f &&  // at least half-full
-        m_actions[action_index] != 0)                    // not already no-pref
+    // P1.5 DEADLOCK ANALYSIS: The original implementation used a hard
+    // deterministic suppression (action = no-prefetch) triggered by a
+    // low raw-average reward threshold (-0.05).  During cold start,
+    // most early predictions are wrong → reward window fills with
+    // negative values → suppression activates → no more prefetches
+    // issued → no positive rewards possible → permanent deadlock.
+    //
+    // P1.6 FIXES:
+    //   (a) WARMUP: suppression fully disabled until WARMUP_SAMPLES
+    //       (512) accumulate.  Even after warmup, requires at minimum
+    //       REWARD_WINDOW (256) samples in the ring buffer.
+    //   (b) SOFT suppression: uses probabilistic bias toward action=0,
+    //       never deterministic.  Escape probability floor = 5%.
+    //   (c) Exploration bypass: ε-greedy random probes are never
+    //       suppressed — they are the mechanism for breaking deadlocks.
+    //   (d) Positive-ratio metric: tracks the fraction of positive
+    //       rewards in the sliding window, which is scale-invariant
+    //       and directly measures "is the bandit doing any good?".
+    //   (e) Recovery ramp: when positive_ratio improves, suppression
+    //       probability smoothly decreases, avoiding hysteresis.
+    //
+    // Thresholds (tuned to be lenient — only suppress when clearly harmful):
+    //   positive_ratio < 0.15  → strong bias toward no-prefetch (80% prob)
+    //   positive_ratio < 0.30  → mild bias (40% prob)
+    //   positive_ratio >= 0.30 → no suppression
+    if (m_actions[action_index] != 0                         // not already no-pref
+        && is_exploit)                                       // P1.6(c): not during exploration
     {
-        float recent_avg = m_reward_sum / m_reward_count;
-        // Scaled reward range: TIMELY≈+0.8, UNTIMELY≈+0.4, INCORRECT≈-0.32
-        // Threshold of -0.05 means "net negative on average"
-        if (recent_avg < -0.05f) {
-            // Strongly negative: force no-prefetch deterministically
-            action_index = m_no_pref_action_idx;
-        } else if (recent_avg < 0.02f) {
-            // Mildly negative/neutral: force no-prefetch probabilistically
-            // Probability scales with how negative the trend is
-            float prob = (0.02f - recent_avg) / 0.07f;  // [0, 1] range
-            if (m_dist(m_rng) < prob) {
+        m_stats.suppress.called++;
+
+        // P1.6(a): require warmup before ANY suppression
+        if (m_reward_count >= (float)WARMUP_SAMPLES) {
+
+            // P1.6(d): compute positive-reward ratio in sliding window
+            float pos_ratio = (m_reward_sum > 0.0f)
+                ? m_positive_sum / m_reward_count
+                : 0.0f;
+
+            float suppress_prob = 0.0f;
+
+            if (pos_ratio < 0.15f) {
+                // Very few positive rewards → strong bias toward no-prefetch
+                // But cap at 80% — always leave 20% escape probability
+                // so the bandit can re-discover useful prefetch patterns.
+                suppress_prob = 0.80f;
+            } else if (pos_ratio < 0.30f) {
+                // Below-average positive rate → mild bias
+                // Linear ramp from 40% at pos_ratio=0.15 to 0% at pos_ratio=0.30
+                suppress_prob = 0.40f * (1.0f - (pos_ratio - 0.15f) / 0.15f);
+            }
+            // pos_ratio >= 0.30: no suppression
+
+            // P1.6(e): probabilistic (never deterministic)
+            if (suppress_prob > 0.0f && m_dist(m_rng) < suppress_prob) {
                 action_index = m_no_pref_action_idx;
+                m_stats.suppress.suppressed++;
+            } else if (suppress_prob > 0.0f) {
+                m_stats.suppress.suppressed_escape++;
             }
         }
+        // else: still in warmup → suppression disabled, let the bandit learn
     }
 
     // ---- P1.4: Store confidence for next prediction on this page ----
@@ -895,14 +939,13 @@ void ContextualBanditPrefetcher::train_from_reward(CBPrefetchTrackerEntry* entry
         // Small positive reward: +5 → scaled to +0.2 (mild reinforcement)
         float scaled_reward = 5.0f / 25.0f;
 
-        // P1.5 FIX: update sliding window BEFORE training, so the adaptive
-        // aggressiveness check sees "correct restraint" rewards as well.
-        // Previously the early return skipped the ring buffer entirely,
-        // causing recent_avg to stay negative when bandit correctly chose
-        // action=0 → over-suppression feedback loop.
-        m_reward_sum -= m_reward_ring[m_reward_head];
+        // P1.6: update sliding window and positive-sum tracking
+        float old_val = m_reward_ring[m_reward_head];
+        m_reward_sum -= old_val;
         m_reward_ring[m_reward_head] = scaled_reward;
         m_reward_sum += scaled_reward;
+        m_positive_sum -= (old_val > 0.0f ? 1.0f : 0.0f);
+        m_positive_sum += (scaled_reward > 0.0f ? 1.0f : 0.0f);
         m_reward_head = (m_reward_head + 1) % REWARD_WINDOW;
         if (m_reward_count < (float)REWARD_WINDOW) m_reward_count += 1.0f;
 
@@ -917,12 +960,23 @@ void ContextualBanditPrefetcher::train_from_reward(CBPrefetchTrackerEntry* entry
         // Timely=+20 → +0.8, Untimely=+10 → +0.4, Incorrect=-8 → -0.32, etc.
         float scaled_reward = (float)raw_reward / 25.0f;
 
-        // P1.5: Track reward in sliding window for adaptive aggressiveness
-        m_reward_sum -= m_reward_ring[m_reward_head];
+        // P1.6: Track reward in sliding window for adaptive aggressiveness.
+        // Also maintain a separate positive-reward EMA for ratio-based suppression.
+        float old_val = m_reward_ring[m_reward_head];
+        m_reward_sum -= old_val;
         m_reward_ring[m_reward_head] = scaled_reward;
         m_reward_sum += scaled_reward;
+
+        // P1.6(d): maintain positive-reward running sum
+        // Replace old binary contribution with new one
+        m_positive_sum -= (old_val > 0.0f ? 1.0f : 0.0f);
+        m_positive_sum += (scaled_reward > 0.0f ? 1.0f : 0.0f);
+
         m_reward_head = (m_reward_head + 1) % REWARD_WINDOW;
         if (m_reward_count < (float)REWARD_WINDOW) {
+            // Still filling the ring buffer: count is incremented per sample.
+            // positive_sum is also incremented (old_val=0 on first fill, so the
+            // "minus old" is a no-op for the initial fill).
             m_reward_count += 1.0f;
         }
 
@@ -1165,6 +1219,12 @@ void ContextualBanditPrefetcher::dump_stats() {
     cout << "linucb_learn_positive " << m_stats.learn.learned_positive << endl;
     cout << "linucb_learn_negative " << m_stats.learn.learned_negative << endl;
     cout << "linucb_learn_skipped " << m_stats.learn.learn_skipped_no_reward << endl;
+    cout << endl;
+
+    cout << "linucb_suppress_called " << m_stats.suppress.called << endl;
+    cout << "linucb_suppress_suppressed " << m_stats.suppress.suppressed << endl;
+    cout << "linucb_suppress_prob " << m_stats.suppress.suppressed_prob << endl;
+    cout << "linucb_suppress_escape " << m_stats.suppress.suppressed_escape << endl;
     cout << endl;
 
     cout << "linucb_register_fill_called " << m_stats.register_fill.called << endl;

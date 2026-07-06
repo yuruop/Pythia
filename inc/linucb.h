@@ -213,24 +213,43 @@ private:
     // ---------- Exploration ----------
     float    m_epsilon;
 
-    // ---------- Adaptive aggressiveness (P1.5) ----------
-    // Tracks a sliding window of recent scaled rewards to detect when the
-    // bandit is consistently receiving negative feedback — a sign that the
-    // current access pattern is not prefetch-friendly (e.g., random pointer
-    // chasing).  When the recent average reward drops below a threshold,
-    // the prefetcher increases its bias toward the "no-prefetch" action.
-    static constexpr uint32_t REWARD_WINDOW = 256;
-    float  m_reward_ring[REWARD_WINDOW];    // sliding window of recent rewards
-    uint32_t m_reward_head;                 // ring buffer write position
-    float  m_reward_sum;                    // running sum for O(1) average
-    float  m_reward_count;                  // number of samples accumulated
-    uint32_t m_no_pref_action_idx;          // cached index of action=0
-
     // ---------- RNG ----------
+    // Must be declared BEFORE m_reward_* members because the constructor
+    // initializer list initializes RNG objects first.
     std::mt19937                          m_rng;
     std::bernoulli_distribution           m_explore;
     std::uniform_int_distribution<int32_t> m_action_gen;
     std::uniform_real_distribution<float> m_dist;  // P1.5: for adaptive agg
+
+    // ---------- Adaptive aggressiveness (P1.5, fixed P1.6) ----------
+    // Tracks a sliding window of recent scaled rewards to detect when the
+    // bandit is consistently receiving negative feedback — a sign that the
+    // current access pattern is not prefetch-friendly (e.g., random pointer
+    // chasing).  When the recent average reward drops below a threshold,
+    // the prefetcher probabilistically biases toward "no-prefetch".
+    //
+    // P1.6 FIX: The original P1.5 implementation created a cold-start
+    // deadlock — early negative rewards triggered deterministic suppression,
+    // which prevented any future prefetches from being issued, which meant
+    // no positive rewards could ever arrive to lift the suppression.
+    // Fixes applied:
+    //   (a) WARMUP_SAMPLES: suppression is fully disabled until enough
+    //       samples accumulate (2× REWARD_WINDOW).
+    //   (b) Suppression is SOFT (probabilistic), not HARD (deterministic).
+    //   (c) Suppression is skipped during ε-greedy exploration so random
+    //       probes can still break out of a negative cycle.
+    //   (d) Threshold uses the RATIO of positive rewards in the window
+    //       (not raw average), which is invariant to reward scale.
+    //   (e) Even under max suppression, a 5% escape probability is
+    //       retained so the bandit can recover autonomously.
+    static constexpr uint32_t REWARD_WINDOW   = 256;
+    static constexpr uint32_t WARMUP_SAMPLES  = 512;  // 2× REWARD_WINDOW (P1.6)
+    float  m_reward_ring[REWARD_WINDOW];    // sliding window of recent rewards
+    uint32_t m_reward_head;                 // ring buffer write position
+    float  m_reward_sum;                    // running sum for O(1) average
+    float  m_reward_count;                  // number of samples accumulated
+    float  m_positive_sum;                  // running sum of positive-reward fraction (P1.6)
+    uint32_t m_no_pref_action_idx;          // cached index of action=0
 
     // ---------- Statistics ----------
     struct {
@@ -272,6 +291,13 @@ private:
             uint64_t learned_negative;
             uint64_t learn_skipped_no_reward;
         } learn;
+
+        struct {
+            uint64_t called;
+            uint64_t suppressed;          // times suppression forced no-prefetch (P1.6)
+            uint64_t suppressed_prob;     // times probabilistic suppression hit (P1.6)
+            uint64_t suppressed_escape;   // times escape probability let prefetch through (P1.6)
+        } suppress;
 
         struct {
             uint64_t called;
