@@ -366,6 +366,16 @@ void TsetlinMachine::type_II_feedback(uint32_t clause_idx, const int32_t* X) {
     }
 }
 
+/* -------------------------------------------------------------------------
+ * predict_with_votes(): Like predict() but returns the raw class_sum array.
+ * Used by feature-wise pooling for sub-TM vote aggregation.
+ * ------------------------------------------------------------------------- */
+const int32_t* TsetlinMachine::predict_with_votes(const int32_t* features) {
+    calculate_clause_output(features, true);
+    sum_up_class_votes();
+    return m_class_sum;
+}
+
 int32_t TsetlinMachine::get_class_sum(uint32_t action_class) const {
     return m_class_sum[action_class];
 }
@@ -434,7 +444,13 @@ TsetlinPrefetcher::TsetlinPrefetcher(
         uint32_t freq_bits,
         uint32_t conf_bits,
         float epsilon_init,
-        uint64_t warmup_invocations)
+        uint64_t warmup_invocations,
+        bool featurewise,
+        int32_t pooling_mode,
+        float tm_weight_lr,
+        int32_t encoding_mode,
+        uint32_t num_tilings,
+        uint32_t tiles_per_tiling)
     : Prefetcher(type)
     , m_num_features(tm_cfg.num_features)
     , m_actions(actions)
@@ -455,9 +471,28 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     , m_rng(seed)
     , m_explore(epsilon_init > epsilon ? epsilon_init : epsilon)  // start at init rate
     , m_action_gen(0, m_max_actions - 1)
+    , m_featurewise(featurewise)
+    , m_feature_tms(nullptr)
+    , m_num_feature_tms(0)
+    , m_pooling_mode((PoolingMode)pooling_mode)
+    , m_tm_weights(nullptr)
+    , m_tm_weight_lr(tm_weight_lr)
+    , m_encoding((EncodingMode)encoding_mode)
+    , m_num_tilings(num_tilings)
+    , m_tiles_per_tiling(tiles_per_tiling)
 {
-    // Create the Tsetlin Machine
-    m_tm = new TsetlinMachine(tm_cfg);
+    // Initialize pooled class sums cache
+    for (uint32_t i = 0; i < MAX_POOLED_ACTIONS; i++) {
+        m_pooled_class_sums[i] = 0;
+    }
+
+    // Create the Tsetlin Machine(s)
+    if (m_featurewise) {
+        init_featurewise_tms(tm_cfg);
+        m_tm = nullptr;  // monolithic TM not used in feature-wise mode
+    } else {
+        m_tm = new TsetlinMachine(tm_cfg);
+    }
 
     // invoke_prefetcher() uses a stack-allocated features[MAX_FEATURES] buffer
     // on the hot path to avoid heap allocation. Runtime check (not assert) —
@@ -497,15 +532,34 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     m_conf_bits        = (conf_bits <= 8) ? conf_bits : 8;    // max 8 bits
     m_tm_threshold     = (int32_t)tm_cfg.threshold;           // for confidence max
 
-    uint32_t min_features = m_temp_offset_bits + m_temp_delta_bits + 1
+    // P2.4: When tile coding is enabled, hash feature bits are computed from
+    // tiling parameters rather than the remaining feature budget.  This changes
+    // the total feature count: the .ini must specify num_features large enough
+    // to hold (num_tilings * tiles_per_tiling + other_bits).
+    if (m_encoding == ENCODING_TILE) {
+        // Validate tiling parameters.  Zero values would produce zero hash
+        // features, effectively disabling the PC+Page sub-TM (all clauses
+        // would see no features and vote identically → useless).
+        if (m_num_tilings < 1 || m_tiles_per_tiling < 1) {
+            cerr << "FATAL: tile coding requires num_tilings >= 1 and "
+                 << "tiles_per_tiling >= 1 (got " << m_num_tilings
+                 << " and " << m_tiles_per_tiling << ")" << endl;
+            abort();
+        }
+        m_hash_feature_bits = m_num_tilings * m_tiles_per_tiling;
+    } else {
+        m_hash_feature_bits = m_num_features - m_temp_offset_bits
+                            - m_temp_delta_bits - 1
+                            - m_interaction_bits - m_temp_bw_bits
+                            - m_delta_sig_bits - m_freq_bits - m_conf_bits;
+    }
+
+    uint32_t min_features = m_hash_feature_bits
+                          + m_temp_offset_bits + m_temp_delta_bits + 1
                           + m_interaction_bits + m_temp_bw_bits
                           + m_delta_sig_bits + m_freq_bits + m_conf_bits;
     assert(m_num_features >= min_features &&
            "num_features too small for configured feature bit allocation");
-    m_hash_feature_bits = m_num_features - m_temp_offset_bits
-                        - m_temp_delta_bits - 1
-                        - m_interaction_bits - m_temp_bw_bits
-                        - m_delta_sig_bits - m_freq_bits - m_conf_bits;
 
     // Initialize stats (zero-init scalars; vectors resized below)
     m_stats.pt.lookup = 0; m_stats.pt.hit = 0; m_stats.pt.evict = 0; m_stats.pt.insert = 0;
@@ -528,14 +582,258 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     for (int i = 0; i < NUM_REWARD_TYPES; i++) {
         m_stats.reward.reward_per_action[i].resize(m_max_actions, 0);
     }
+
+    // Feature-wise stats (P2.3)
+    m_stats.featurewise.pooled_predicts = 0;
+    m_stats.featurewise.weight_updates = 0;
+    for (uint32_t i = 0; i < 8; i++) {
+        m_stats.featurewise.group_predicts[i] = 0;
+    }
 }
 
 TsetlinPrefetcher::~TsetlinPrefetcher() {
-    delete m_tm;
+    if (m_featurewise) {
+        if (m_feature_tms) {
+            for (uint32_t i = 0; i < m_num_feature_tms; i++) {
+                delete m_feature_tms[i].tm;
+            }
+            delete[] m_feature_tms;
+        }
+        delete[] m_tm_weights;
+    } else {
+        delete m_tm;
+    }
     // Clean up any remaining PT entries
     while (!m_pt.empty()) {
         delete m_pt.back();
         m_pt.pop_back();
+    }
+}
+
+/* =========================================================================
+ * P2.3: Feature-wise TM — initialization, predict, train
+ * ========================================================================= */
+
+/* -------------------------------------------------------------------------
+ * init_featurewise_tms(): Create sub-TMs for each feature group.
+ *
+ * Three groups mirroring Pythia's feature decomposition:
+ *   Group 0 "PC+Page" : hash features (m_hash_feature_bits bits)
+ *   Group 1 "Stride"  : offset + delta magnitude + delta sign
+ *   Group 2 "Context" : interaction + BW + delta_sig + freq + conf
+ *
+ * Clauses are allocated proportionally to feature count, with a minimum
+ * of (num_actions * 2) clauses per sub-TM (the multiclass TM requirement).
+ * ------------------------------------------------------------------------- */
+void TsetlinPrefetcher::init_featurewise_tms(const TsetlinMachine::Config& base_cfg)
+{
+    // Define feature groups aligned with the existing flat feature layout
+    uint32_t stride_feat_count = m_temp_offset_bits + m_temp_delta_bits + 1;
+    uint32_t context_feat_count = m_interaction_bits + m_temp_bw_bits
+                                + m_delta_sig_bits + m_freq_bits + m_conf_bits;
+
+    // At minimum we need the hash group and the stride group.
+    // If context features are all zero, skip that group.
+    uint32_t group_count = 2 + (context_feat_count > 0 ? 1 : 0);
+    m_num_feature_tms = group_count;
+    m_feature_tms = new TsetlinFeatureGroup[group_count];
+
+    // Group 0: PC+Page (hash encoding)
+    m_feature_tms[0].feat_start = 0;
+    m_feature_tms[0].feat_count = m_hash_feature_bits;
+    m_feature_tms[0].name = "PC+Page";
+
+    // Group 1: Stride (offset + delta magnitude + delta sign)
+    m_feature_tms[1].feat_start = m_hash_feature_bits;
+    m_feature_tms[1].feat_count = stride_feat_count;
+    m_feature_tms[1].name = "Stride";
+
+    // Group 2: Context (interaction + BW + delta_sig + freq + conf)
+    if (context_feat_count > 0) {
+        m_feature_tms[2].feat_start = m_hash_feature_bits + stride_feat_count;
+        m_feature_tms[2].feat_count = context_feat_count;
+        m_feature_tms[2].name = "Context";
+    }
+
+    // Proportional clause allocation with minimum per sub-TM
+    uint32_t total_clauses = base_cfg.num_clauses;
+    uint32_t min_clauses = base_cfg.num_actions * 2;  // TM constructor requirement
+    uint32_t total_features = m_hash_feature_bits + stride_feat_count
+                            + context_feat_count;
+
+    for (uint32_t g = 0; g < group_count; g++) {
+        TsetlinMachine::Config cfg = base_cfg;
+        cfg.num_features = m_feature_tms[g].feat_count;
+
+        // Proportional clause count: round(total * feat_count / total_features)
+        uint32_t proportional = (uint32_t)(
+            (float)total_clauses * (float)cfg.num_features / (float)total_features + 0.5f);
+        if (proportional < min_clauses) proportional = min_clauses;
+        cfg.num_clauses = proportional;
+
+        m_feature_tms[g].tm = new TsetlinMachine(cfg);
+    }
+
+    // Initialize sub-TM weights uniformly for weighted-sum pooling
+    m_tm_weights = new float[group_count];
+    for (uint32_t g = 0; g < group_count; g++) {
+        m_tm_weights[g] = 1.0f / (float)group_count;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * predict_featurewise(): Pool vote vectors from all sub-TMs, return argmax.
+ *
+ * Pooling modes:
+ *   POOL_MAX:      pooled_score[a] = max_i(sub_sums[i][a])
+ *   POOL_WEIGHTED: pooled_score[a] = sum_i(weight[i] * sub_sums[i][a])
+ *
+ * Caches the pooled vote vector in m_pooled_class_sums for downstream use
+ * (dynamic degree, confidence feedback).
+ * ------------------------------------------------------------------------- */
+uint32_t TsetlinPrefetcher::predict_featurewise(const int32_t* features)
+{
+    m_stats.featurewise.pooled_predicts++;
+
+    // Collect per-sub-TM vote vectors.
+    // Each sub-TM is a separate TsetlinMachine with its own m_class_sum
+    // buffer, so successive predict_with_votes() calls do NOT clobber
+    // earlier results.  We store raw pointers to each TM's internal
+    // class_sum array — avoids copying 32 ints per sub-TM.
+    const int32_t* sub_votes[8];
+
+    for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+        sub_votes[g] = m_feature_tms[g].tm->predict_with_votes(
+            features + m_feature_tms[g].feat_start);
+    }
+
+    // Pool votes per action
+    uint32_t num_actions = m_feature_tms[0].tm->num_actions();
+    if (num_actions > MAX_POOLED_ACTIONS) num_actions = MAX_POOLED_ACTIONS;
+
+    int32_t max_pooled = INT32_MIN;
+    uint32_t best_action = 0;
+
+    for (uint32_t a = 0; a < num_actions; a++) {
+        float pooled = 0.0f;
+
+        if (m_pooling_mode == POOL_MAX) {
+            int32_t max_val = INT32_MIN;
+            for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+                if (sub_votes[g][a] > max_val) max_val = sub_votes[g][a];
+            }
+            pooled = (float)max_val;
+        } else {
+            // POOL_WEIGHTED
+            for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+                pooled += m_tm_weights[g] * (float)sub_votes[g][a];
+            }
+        }
+
+        m_pooled_class_sums[a] = (int32_t)pooled;
+
+        if (pooled > max_pooled) {
+            max_pooled = (int32_t)pooled;
+            best_action = a;
+        }
+    }
+
+    // Track per-group contribution: which group's preferred action matched the pool?
+    for (uint32_t g = 0; g < m_num_feature_tms && g < 8; g++) {
+        // Find this sub-TM's best action
+        int32_t g_best_val = sub_votes[g][0];
+        uint32_t g_best_act = 0;
+        for (uint32_t a = 1; a < num_actions; a++) {
+            if (sub_votes[g][a] > g_best_val) {
+                g_best_val = sub_votes[g][a];
+                g_best_act = a;
+            }
+        }
+        if (g_best_act == best_action) {
+            m_stats.featurewise.group_predicts[g]++;
+        }
+    }
+
+    return best_action;
+}
+
+/* -------------------------------------------------------------------------
+ * train_featurewise(): Route update to all sub-TMs with the same reward signal.
+ *
+ * Each sub-TM receives the full reward polarity for the chosen action —
+ * "collaborative learning" where each sub-model gets full credit/blame.
+ * Weights are updated via EMA of correctness if in POOL_WEIGHTED mode.
+ * ------------------------------------------------------------------------- */
+void TsetlinPrefetcher::train_featurewise(const int32_t* features,
+                                           uint32_t action, bool is_positive)
+{
+    for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+        m_feature_tms[g].tm->update(
+            features + m_feature_tms[g].feat_start, action, is_positive);
+    }
+
+    // Weight update for POOL_WEIGHTED mode
+    if (m_pooling_mode == POOL_WEIGHTED && m_tm_weight_lr > 0.0f) {
+        m_stats.featurewise.weight_updates++;
+        float correct = is_positive ? 1.0f : 0.0f;
+        float weight_sum = 0.0f;
+        for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+            m_tm_weights[g] = m_tm_weights[g] * (1.0f - m_tm_weight_lr)
+                            + m_tm_weight_lr * correct;
+            weight_sum += m_tm_weights[g];
+        }
+        // Renormalize
+        if (weight_sum > 0.0f) {
+            for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+                m_tm_weights[g] /= weight_sum;
+            }
+        }
+    }
+}
+
+/* =========================================================================
+ * P2.4: Tile-coding alternative to hash encoding
+ * ========================================================================= */
+
+/* -------------------------------------------------------------------------
+ * generate_tile_features(): Overlapping tiling encoding for PC+Page features.
+ *
+ * Uses num_tilings independent hash functions, each mapping to one "tile"
+ * (a set of tiles_per_tiling binary features).  Within each tiling, exactly
+ * one bit is set (one-hot).  Across tilings, the bits overlap, giving the TM
+ * automatic generalization: similar (PC, page) inputs map to overlapping
+ * sets of active tiles.
+ *
+ * Tiling constants (c[t], d[t]) are small primes for good bit mixing.
+ * ------------------------------------------------------------------------- */
+void TsetlinPrefetcher::generate_tile_features(
+        uint64_t pc, uint64_t page,
+        int32_t* features, uint32_t feat_start)
+{
+    // Tiling offset constants (small primes for dispersion)
+    static const uint64_t TILING_C[8] = {
+        0x9E3779B97F4A7C15ULL, 0xBF58476D1CE4E5B9ULL,
+        0x94D049BB133111EBULL, 0xC6A4A7935BD1E995ULL,
+        0x27AE2F79B82E3C65ULL, 0x7F4A7C159E3779B9ULL,
+        0x3C6EF372FE94F82CULL, 0xA54FF53A5F1D36F1ULL
+    };
+    static const uint32_t TILING_SHIFT[8] = { 3, 7, 11, 13, 17, 19, 23, 29 };
+
+    for (uint32_t t = 0; t < m_num_tilings; t++) {
+        // Hash (PC, page) through tiling-specific mixing
+        uint64_t h = pc ^ ((page + TILING_C[t]) << TILING_SHIFT[t % 8]);
+        h = (h ^ (h >> 30)) * TILING_C[(t + 1) % 8];
+        h = (h ^ (h >> 27)) * TILING_C[(t + 3) % 8];
+        h = h ^ (h >> 31);
+
+        // Map to a tile index in [0, tiles_per_tiling)
+        uint32_t tile = (uint32_t)(h % m_tiles_per_tiling);
+
+        // One-hot encoding within this tiling
+        uint32_t base = feat_start + t * m_tiles_per_tiling;
+        for (uint32_t i = 0; i < m_tiles_per_tiling; i++) {
+            features[base + i] = (i == tile) ? 1 : 0;
+        }
     }
 }
 
@@ -565,21 +863,28 @@ void TsetlinPrefetcher::generate_features(
         int32_t delta, uint8_t bw_level, uint32_t delta_sig,
         uint32_t access_count, int32_t last_confidence, int32_t* features)
 {
-    // ---- Part 1: Hash encoding for categorical features (PC, page) ----
-    // BW level is no longer mixed into the hash — it gets its own
-    // independent thermometer encoding below (P1.2).
-    uint64_t base = pc;
-    base ^= (page << 3);
+    // ---- Part 1: Encoding for categorical features (PC, page) ----
+    // P2.4: Two encoding modes:
+    //   ENCODING_HASH: original XOR+mix per-bit hash — no locality
+    //   ENCODING_TILE: overlapping tilings — preserves locality,
+    //     similar (PC, page) → overlapping active tiles → generalization
+    if (m_encoding == ENCODING_TILE) {
+        generate_tile_features(pc, page, features, 0);
+    } else {
+        // Original hash encoding
+        uint64_t base = pc;
+        base ^= (page << 3);
 
-    for (uint32_t i = 0; i < m_hash_feature_bits; i++) {
-        uint64_t h = base ^ ((uint64_t)i * 0x9E3779B97F4A7C15ULL);
+        for (uint32_t i = 0; i < m_hash_feature_bits; i++) {
+            uint64_t h = base ^ ((uint64_t)i * 0x9E3779B97F4A7C15ULL);
 
-        // splitmix64 mixing (all integer ops)
-        h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ULL;
-        h = (h ^ (h >> 27)) * 0x94D049BB133111EBULL;
-        h = h ^ (h >> 31);
+            // splitmix64 mixing (all integer ops)
+            h = (h ^ (h >> 30)) * 0xBF58476D1CE4E5B9ULL;
+            h = (h ^ (h >> 27)) * 0x94D049BB133111EBULL;
+            h = h ^ (h >> 31);
 
-        features[i] = (int32_t)(h & 1);
+            features[i] = (int32_t)(h & 1);
+        }
     }
 
     uint32_t feat_base = m_hash_feature_bits;
@@ -836,36 +1141,76 @@ void TsetlinPrefetcher::invoke_prefetcher(
     m_invocation_count++;
 
     uint32_t action_index;
+    bool is_explore_step = false;  // P2.3 fix: track for cache-freshness
 
     if (m_explore(m_rng)) {
-        // ε-exploration: random action
+        // ε-exploration: random action.
+        //
+        // P2.3 FIX: still run predict_featurewise() in exploration mode to
+        // keep m_pooled_class_sums fresh for downstream consumers (confidence
+        // feedback P1.4, dynamic degree P1.1).  Without this, during long
+        // stretches of exploration the pooled sums would be stale (from a
+        // different PC/page context), corrupting confidence features and
+        // causing incorrect degree selection.
+        if (m_featurewise) {
+            predict_featurewise(features);  // update caches
+        } else {
+            m_tm->predict(features);        // update m_class_sum in monolithic TM
+        }
         action_index = m_action_gen(m_rng);
         m_stats.predict.explore++;
+        is_explore_step = true;
     } else {
-        // Exploit: use TM prediction
-        action_index = m_tm->predict(features);
+        // Exploit: use TM prediction (monolithic or feature-wise)
+        if (m_featurewise) {
+            action_index = predict_featurewise(features);
+        } else {
+            action_index = m_tm->predict(features);
+        }
         m_stats.predict.exploit++;
     }
 
     assert(action_index < m_max_actions);
 
     // P1.5: Chaos suppression — force no-prefetch on irregular access patterns.
-    // This overrides the TM's prediction when the access pattern is too random.
-    // The TM continues to train normally (features are still generated with the
-    // chosen action), so it still learns from chaos-suppressed decisions.
+    //
+    // P2.7 FIX (T-CRIT-3): Save the TM's ORIGINAL prediction before chaos
+    // override.  The original code trained with the OVERRIDDEN no_pref action,
+    // creating a one-way ratchet: chaos → no_pref trained → TM learns
+    // conservatism → chaos clears but TM stays conservative.
+    //
+    // Fix: (a) save original action for training; (b) create shadow PT entries
+    // with the would-be prefetch address and original action, so the TM
+    // receives correct feedback (positive if prediction was right, negative if
+    // wrong) regardless of chaos suppression.
+    uint32_t train_action = action_index;   // TM's actual prediction
+    bool chaos_suppressed = false;
     if (is_chaotic && m_actions[action_index] != 0) {
         // Find the no-prefetch action index (action delta == 0)
         for (uint32_t i = 0; i < m_max_actions; i++) {
             if (m_actions[i] == 0) { action_index = i; break; }
         }
+        chaos_suppressed = true;
     }
 
     // ---- P1.4: Store confidence for next prediction on this page ----
     // Enables second-order reasoning: the TM's own certainty becomes a feature
     // for the next decision on the same page.  Confidence = vote margin.
     if (m_conf_bits > 0) {
-        int32_t best_sum   = m_tm->get_class_sum(action_index);
-        int32_t second_sum = m_tm->get_second_best_class_sum();
+        int32_t best_sum, second_sum;
+        if (m_featurewise) {
+            // Use pooled vote vector cached from predict_featurewise()
+            best_sum = m_pooled_class_sums[action_index];
+            second_sum = 0;
+            for (uint32_t a = 0; a < m_max_actions; a++) {
+                if (a != action_index && m_pooled_class_sums[a] > second_sum) {
+                    second_sum = m_pooled_class_sums[a];
+                }
+            }
+        } else {
+            best_sum   = m_tm->get_class_sum(action_index);
+            second_sum = m_tm->get_second_best_class_sum();
+        }
         int32_t conf = best_sum - second_sum;
         if (conf < 0) conf = 0;
         lot_entry.last_confidence = conf;
@@ -966,6 +1311,62 @@ void TsetlinPrefetcher::invoke_prefetcher(
                 delete victim;
             }
         }
+    } else if (chaos_suppressed) {
+        // P2.7 (T-CRIT-3 fix): Chaos suppressed a real prefetch → create a
+        // "shadow" PT entry.  The prefetch is NOT actually issued (to avoid
+        // cache pollution during chaotic access), but the PT entry records
+        // the TM's original prediction with the WOULD-BE prefetch address.
+        //
+        // When the demand access arrives, the PT search finds this entry
+        // and the TM receives accurate feedback:
+        //   - Demand hits the address → timely/untimely (+reward)
+        //     → TM correctly reinforced for its good prediction
+        //   - Demand never arrives → incorrect (-reward) on PT eviction
+        //     → TM correctly penalized for its bad prediction
+        //
+        // This replaces the original behavior where chaos-overridden
+        // no-prefetch actions always received REWARD_NONE, creating
+        // a conservative bias that persisted after chaos cleared.
+        int32_t predicted_offset = (int32_t)offset + m_actions[train_action];
+        int32_t max_offset = (1 << (LOG2_PAGE_SIZE - LOG2_BLOCK_SIZE)) - 1;
+
+        if (predicted_offset >= 0 && predicted_offset <= max_offset) {
+            uint64_t pf_addr = (page << LOG2_PAGE_SIZE) +
+                               (predicted_offset << LOG2_BLOCK_SIZE);
+
+            vector<TMPrefetchTrackerEntry*> existing = search_pt(pf_addr);
+            if (existing.empty()) {
+                TMPrefetchTrackerEntry* entry =
+                    new TMPrefetchTrackerEntry(pf_addr, features,
+                                                train_action, m_num_features);
+                m_pt.push_back(entry);
+                m_stats.pt.insert++;
+
+                if (m_pt.size() > m_pt_size) {
+                    TMPrefetchTrackerEntry* victim = m_pt.front();
+                    m_pt.pop_front();
+                    m_stats.pt.evict++;
+                    if (victim->is_filled) { m_stats.pt.evict_filled++; }
+                    else                   { m_stats.pt.evict_unfilled++; }
+
+                    if (!victim->has_reward) {
+                        if (victim->is_sentinel) {
+                            victim->reward_type = REWARD_NONE;
+                            m_stats.reward.no_pref++;
+                        } else {
+                            victim->reward_type = REWARD_INCORRECT;
+                            m_stats.reward.incorrect++;
+                        }
+                        victim->reward = compute_reward(victim, victim->reward_type);
+                        victim->has_reward = true;
+                        train_from_reward(victim);
+                    }
+                    delete victim;
+                }
+            }
+        }
+        // If would-be address is out of bounds, don't create a PT entry
+        // (the TM's prediction was invalid regardless of chaos).
     } else {
         // No prefetch: track decision
         TMPrefetchTrackerEntry* entry =
@@ -1098,7 +1499,11 @@ void TsetlinPrefetcher::train_from_reward(TMPrefetchTrackerEntry* entry) {
     // location.  This is "correct restraint" — give Type I feedback so the
     // TM learns when conservatism is appropriate.
     if (reward_type == REWARD_NONE && action == 0) {
-        m_tm->update(entry->features, action, true);
+        if (m_featurewise) {
+            train_featurewise(entry->features, action, true);
+        } else {
+            m_tm->update(entry->features, action, true);
+        }
         m_stats.learn.learned_positive++;
         m_stats.reward.reward_per_action[reward_type][action]++;
         return;
@@ -1106,11 +1511,19 @@ void TsetlinPrefetcher::train_from_reward(TMPrefetchTrackerEntry* entry) {
 
     if (reward > 0) {
         // Positive reward: reinforce the chosen action
-        m_tm->update(entry->features, action, true);
+        if (m_featurewise) {
+            train_featurewise(entry->features, action, true);
+        } else {
+            m_tm->update(entry->features, action, true);
+        }
         m_stats.learn.learned_positive++;
     } else if (reward < 0) {
         // Negative reward: penalize the chosen action
-        m_tm->update(entry->features, action, false);
+        if (m_featurewise) {
+            train_featurewise(entry->features, action, false);
+        } else {
+            m_tm->update(entry->features, action, false);
+        }
         m_stats.learn.learned_negative++;
     } else {
         m_stats.learn.learn_skipped_no_reward++;
@@ -1170,8 +1583,19 @@ uint32_t TsetlinPrefetcher::get_dyn_pref_degree(uint32_t action_index)
 
     // P1.1: margin-based confidence = best_class_sum - second_best_class_sum
     // Higher margin → clearer winner → more confidence → higher degree.
-    int32_t best_sum   = m_tm->get_class_sum(action_index);
-    int32_t second_sum = m_tm->get_second_best_class_sum();
+    int32_t best_sum, second_sum;
+    if (m_featurewise) {
+        best_sum = m_pooled_class_sums[action_index];
+        second_sum = 0;
+        for (uint32_t a = 0; a < m_max_actions; a++) {
+            if (a != action_index && m_pooled_class_sums[a] > second_sum) {
+                second_sum = m_pooled_class_sums[a];
+            }
+        }
+    } else {
+        best_sum   = m_tm->get_class_sum(action_index);
+        second_sum = m_tm->get_second_best_class_sum();
+    }
     int32_t conf = best_sum - second_sum;
     if (conf < 0) conf = 0;  // clamp: shouldn't happen, but defensive
 
@@ -1288,6 +1712,24 @@ void TsetlinPrefetcher::print_config() {
          << " (P2.2, current=" << m_explore.p() << ")" << endl;
     cout << "tsetlin_epsilon_min " << m_epsilon_min << endl;
     cout << "tsetlin_warmup_invocations " << m_warmup_invocations << endl;
+    cout << "tsetlin_featurewise " << (m_featurewise ? "true" : "false")
+         << " (P2.3)" << endl;
+    if (m_featurewise) {
+        cout << "tsetlin_pooling_mode " << (m_pooling_mode == POOL_MAX ? "max" : "weighted")
+             << " num_sub_tms=" << m_num_feature_tms << endl;
+        cout << "tsetlin_tm_weight_lr " << m_tm_weight_lr << endl;
+        for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+            cout << "  sub_tm[" << g << "] " << m_feature_tms[g].name
+                 << " features=" << m_feature_tms[g].feat_count
+                 << " weight=" << fixed << setprecision(3) << m_tm_weights[g] << endl;
+        }
+    }
+    cout << "tsetlin_encoding " << (m_encoding == ENCODING_TILE ? "tile" : "hash")
+         << " (P2.4)" << endl;
+    if (m_encoding == ENCODING_TILE) {
+        cout << "tsetlin_num_tilings " << m_num_tilings << endl;
+        cout << "tsetlin_tiles_per_tiling " << m_tiles_per_tiling << endl;
+    }
     cout << endl;
 }
 
@@ -1353,6 +1795,28 @@ void TsetlinPrefetcher::dump_stats() {
     cout << "tsetlin_register_fill_set " << m_stats.register_fill.set << endl;
     cout << endl;
 
+    // Feature-wise stats (P2.3)
+    if (m_featurewise) {
+        cout << "tsetlin_featurewise_pooled_predicts " << m_stats.featurewise.pooled_predicts << endl;
+        cout << "tsetlin_featurewise_weight_updates " << m_stats.featurewise.weight_updates << endl;
+        for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+            cout << "tsetlin_featurewise_group_" << m_feature_tms[g].name
+                 << "_agree " << m_stats.featurewise.group_predicts[g] << endl;
+        }
+        for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+            cout << "tsetlin_featurewise_group_" << m_feature_tms[g].name
+                 << "_weight " << fixed << setprecision(4) << m_tm_weights[g] << endl;
+        }
+        cout << endl;
+    }
+
     // TM internal state stats
-    m_tm->dump_state();
+    if (m_featurewise) {
+        for (uint32_t g = 0; g < m_num_feature_tms; g++) {
+            cout << "--- TM_sub_" << m_feature_tms[g].name << " ---" << endl;
+            m_feature_tms[g].tm->dump_state();
+        }
+    } else {
+        m_tm->dump_state();
+    }
 }

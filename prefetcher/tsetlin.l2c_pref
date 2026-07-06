@@ -46,6 +46,12 @@ namespace knob {
     extern uint32_t tsetlin_conf_bits;
     extern float    tsetlin_epsilon_init;
     extern uint64_t tsetlin_warmup_invocations;
+    extern bool     tsetlin_featurewise;
+    extern int32_t  tsetlin_pooling;
+    extern float    tsetlin_tm_weight_lr;
+    extern int32_t  tsetlin_encoding;
+    extern uint32_t tsetlin_num_tilings;
+    extern uint32_t tsetlin_tiles_per_tiling;
 }
 
 // ---- Global TM configuration (hardware-friendly defaults, override via .ini) ----
@@ -108,7 +114,13 @@ void CACHE::l2c_prefetcher_initialize()
         knob::tsetlin_freq_bits,
         knob::tsetlin_conf_bits,
         knob::tsetlin_epsilon_init,
-        knob::tsetlin_warmup_invocations
+        knob::tsetlin_warmup_invocations,
+        knob::tsetlin_featurewise,
+        knob::tsetlin_pooling,
+        knob::tsetlin_tm_weight_lr,
+        knob::tsetlin_encoding,
+        knob::tsetlin_num_tilings,
+        knob::tsetlin_tiles_per_tiling
     );
 
     cout << "  TM: " << tm_cfg.num_clauses << " clauses, "

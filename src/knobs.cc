@@ -298,6 +298,12 @@ namespace knob
 	vector<int32_t> tsetlin_dyn_deg_values = {2, 2, 4, 6};
 	vector<int32_t> tsetlin_dyn_deg_thresh_hbw = {2, 6, 9};
 	vector<int32_t> tsetlin_dyn_deg_values_hbw = {1, 2, 2, 4};
+	bool     tsetlin_featurewise = false;           // P2.3: feature-wise TM decomposition
+	int32_t  tsetlin_pooling = 0;                  // P2.3: 0=weighted, 1=max
+	float    tsetlin_tm_weight_lr = 0.01f;         // P2.3: EMA decay for weight learning
+	int32_t  tsetlin_encoding = 0;                 // P2.4: 0=hash, 1=tile_coding
+	uint32_t tsetlin_num_tilings = 4;              // P2.4: number of tilings for tile coding
+	uint32_t tsetlin_tiles_per_tiling = 16;        // P2.4: tiles per tiling
 
 	/* Contextual Bandit (LinUCB) Prefetcher */
 	uint32_t linucb_num_actions = 15;
@@ -316,6 +322,12 @@ namespace knob
 	vector<int32_t> linucb_dyn_deg_values = {1, 2, 4, 6};
 	vector<int32_t> linucb_dyn_deg_thresh_hbw = {10, 30, 60};
 	vector<int32_t> linucb_dyn_deg_values_hbw = {1, 1, 2, 4};
+	bool     linucb_featurewise = false;             // P2.3: feature-wise LinUCB
+	int32_t  linucb_featurewise_pooling = 0;        // P2.3: 0=weighted, 1=max
+	float    linucb_featurewise_weight_lr = 0.01f;  // P2.3: EMA decay for weight learning
+	bool     linucb_suppress_gating = false;         // P2.5: UCB score ratio gating
+	float    linucb_suppress_ratio = 1.5f;           // P2.5: best/avg threshold
+	bool     linucb_history_features = false;        // P2.6: path/history features
 }
 
 void parse_args(int argc, char *argv[])
@@ -1313,6 +1325,12 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "tsetlin_conf_bits"))             { knob::tsetlin_conf_bits = atoi(value); }
 		else if (MATCH("", "tsetlin_epsilon_init"))          { knob::tsetlin_epsilon_init = atof(value); }
 		else if (MATCH("", "tsetlin_warmup_invocations"))    { knob::tsetlin_warmup_invocations = atol(value); }
+		else if (MATCH("", "tsetlin_featurewise"))           { knob::tsetlin_featurewise = (bool)atoi(value); }
+		else if (MATCH("", "tsetlin_pooling"))               { knob::tsetlin_pooling = atoi(value); }
+		else if (MATCH("", "tsetlin_tm_weight_lr"))          { knob::tsetlin_tm_weight_lr = atof(value); }
+		else if (MATCH("", "tsetlin_encoding"))              { knob::tsetlin_encoding = atoi(value); }
+		else if (MATCH("", "tsetlin_num_tilings"))           { knob::tsetlin_num_tilings = atoi(value); }
+		else if (MATCH("", "tsetlin_tiles_per_tiling"))      { knob::tsetlin_tiles_per_tiling = atoi(value); }
 
 		/* Contextual Bandit (LinUCB) Prefetcher knobs */
 		else if (MATCH("", "linucb_num_actions"))    { knob::linucb_num_actions = atoi(value); }
@@ -1331,6 +1349,12 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "linucb_dyn_deg_values"))        { knob::linucb_dyn_deg_values = get_array_int(value); }
 		else if (MATCH("", "linucb_dyn_deg_thresh_hbw"))    { knob::linucb_dyn_deg_thresh_hbw = get_array_int(value); }
 		else if (MATCH("", "linucb_dyn_deg_values_hbw"))    { knob::linucb_dyn_deg_values_hbw = get_array_int(value); }
+		else if (MATCH("", "linucb_featurewise"))                { knob::linucb_featurewise = (bool)atoi(value); }
+		else if (MATCH("", "linucb_featurewise_pooling"))        { knob::linucb_featurewise_pooling = atoi(value); }
+		else if (MATCH("", "linucb_featurewise_weight_lr"))      { knob::linucb_featurewise_weight_lr = atof(value); }
+		else if (MATCH("", "linucb_suppress_gating"))            { knob::linucb_suppress_gating = (bool)atoi(value); }
+		else if (MATCH("", "linucb_suppress_ratio"))             { knob::linucb_suppress_ratio = atof(value); }
+		else if (MATCH("", "linucb_history_features"))           { knob::linucb_history_features = (bool)atoi(value); }
 
     else
     {

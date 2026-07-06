@@ -54,6 +54,12 @@ namespace knob
 	extern uint32_t tsetlin_conf_bits;
 	extern float    tsetlin_epsilon_init;
 	extern uint64_t tsetlin_warmup_invocations;
+	extern bool     tsetlin_featurewise;
+	extern int32_t  tsetlin_pooling;
+	extern float    tsetlin_tm_weight_lr;
+	extern int32_t  tsetlin_encoding;
+	extern uint32_t tsetlin_num_tilings;
+	extern uint32_t tsetlin_tiles_per_tiling;
 	/* Contextual Bandit (LinUCB) Prefetcher knobs */
 	extern uint32_t linucb_num_actions;
 	extern uint32_t linucb_num_features;
@@ -71,6 +77,12 @@ namespace knob
 	extern vector<int32_t> linucb_dyn_deg_values;
 	extern vector<int32_t> linucb_dyn_deg_thresh_hbw;
 	extern vector<int32_t> linucb_dyn_deg_values_hbw;
+	extern bool     linucb_featurewise;
+	extern int32_t  linucb_featurewise_pooling;
+	extern float    linucb_featurewise_weight_lr;
+	extern bool     linucb_suppress_gating;
+	extern float    linucb_suppress_ratio;
+	extern bool     linucb_history_features;
 }
 
 // vector<Prefetcher*> prefetchers;
@@ -205,7 +217,13 @@ void CACHE::l2c_prefetcher_initialize()
 				knob::tsetlin_freq_bits,
 				knob::tsetlin_conf_bits,
 				knob::tsetlin_epsilon_init,
-				knob::tsetlin_warmup_invocations);
+				knob::tsetlin_warmup_invocations,
+				knob::tsetlin_featurewise,
+				knob::tsetlin_pooling,
+				knob::tsetlin_tm_weight_lr,
+				knob::tsetlin_encoding,
+				knob::tsetlin_num_tilings,
+				knob::tsetlin_tiles_per_tiling);
 			prefetchers.push_back(pref_tsetlin);
 		}
 		else if (!knob::l2c_prefetcher_types[index].compare("linucb"))
@@ -230,7 +248,13 @@ void CACHE::l2c_prefetcher_initialize()
 			knob::linucb_dyn_deg_thresh,
 			knob::linucb_dyn_deg_values,
 			knob::linucb_dyn_deg_thresh_hbw,
-			knob::linucb_dyn_deg_values_hbw);
+			knob::linucb_dyn_deg_values_hbw,
+			knob::linucb_featurewise,
+			knob::linucb_featurewise_pooling,
+			knob::linucb_featurewise_weight_lr,
+			knob::linucb_suppress_gating,
+			knob::linucb_suppress_ratio,
+			knob::linucb_history_features);
 			prefetchers.push_back(pref_linucb);
 		}
 		else

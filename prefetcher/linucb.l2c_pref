@@ -36,6 +36,12 @@ namespace knob {
     extern vector<int32_t> linucb_dyn_deg_values;
     extern vector<int32_t> linucb_dyn_deg_thresh_hbw;
     extern vector<int32_t> linucb_dyn_deg_values_hbw;
+    extern bool     linucb_featurewise;
+    extern int32_t  linucb_featurewise_pooling;
+    extern float    linucb_featurewise_weight_lr;
+    extern bool     linucb_suppress_gating;
+    extern float    linucb_suppress_ratio;
+    extern bool     linucb_history_features;
 }
 
 // ---- Global LinUCB configuration ----
@@ -88,7 +94,13 @@ void CACHE::l2c_prefetcher_initialize()
         knob::linucb_dyn_deg_thresh,
         knob::linucb_dyn_deg_values,
         knob::linucb_dyn_deg_thresh_hbw,
-        knob::linucb_dyn_deg_values_hbw
+        knob::linucb_dyn_deg_values_hbw,
+        knob::linucb_featurewise,
+        knob::linucb_featurewise_pooling,
+        knob::linucb_featurewise_weight_lr,
+        knob::linucb_suppress_gating,
+        knob::linucb_suppress_ratio,
+        knob::linucb_history_features
     );
 
     // Storage estimate

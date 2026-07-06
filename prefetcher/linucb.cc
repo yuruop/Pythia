@@ -175,6 +175,50 @@ uint32_t LinUCB::predict(const float* features) {
 }
 
 /* -------------------------------------------------------------------------
+ * predict_with_scores(): Full-score predict for feature-wise pooling and gating.
+ *
+ * Fills out_scores[i] with the UCB score for each action, and returns
+ * best_score and avg_score (average over non-zero-delta actions) for
+ * suppression gating.
+ *
+ * Returns: best action index.
+ * ------------------------------------------------------------------------- */
+uint32_t LinUCB::predict_with_scores(const float* features, float* out_scores,
+                                      float* out_best_score, float* out_avg_score)
+{
+    uint32_t d = m_num_features;
+    float best_score = -1e30f;
+    uint32_t best_action = 0;
+    float sum_scores = 0.0f;
+
+    for (uint32_t i = 0; i < m_num_actions; i++) {
+        const float* theta_i = m_theta + i * d;
+        const float* A_inv_i = m_A_inv + i * d * d;
+
+        float expected = dot(theta_i, features);
+        mat_vec_mul(A_inv_i, features, m_Ax);
+        float xAx = dot(features, m_Ax);
+        float conf_bound = m_alpha * sqrtf(fmaxf(xAx, 0.0f));
+
+        float score = expected + conf_bound;
+        out_scores[i] = score;
+        sum_scores += score;
+
+        if (score > best_score) {
+            best_score = score;
+            best_action = i;
+        }
+    }
+
+    if (out_best_score) *out_best_score = best_score;
+    if (out_avg_score) {
+        *out_avg_score = (m_num_actions > 0) ? (sum_scores / (float)m_num_actions) : 0.0f;
+    }
+
+    return best_action;
+}
+
+/* -------------------------------------------------------------------------
  * update(): Sherman-Morrison incremental update
  *
  * A_inv = A_inv - (A_inv * x * x^T * A_inv) / (1 + x^T * A_inv * x)
@@ -309,7 +353,13 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
         const vector<int32_t>& dyn_deg_thresh,
         const vector<int32_t>& dyn_deg_values,
         const vector<int32_t>& dyn_deg_thresh_hbw,
-        const vector<int32_t>& dyn_deg_values_hbw)
+        const vector<int32_t>& dyn_deg_values_hbw,
+        bool featurewise,
+        int32_t lcb_pooling_mode,
+        float lcb_weight_lr,
+        bool suppress_gating,
+        float suppress_ratio,
+        bool history_features)
     : Prefetcher(type)
     , m_num_features(cb_cfg.num_features)
     , m_actions(actions)
@@ -333,7 +383,29 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     , m_reward_count(0.0f)
     , m_positive_sum(0.0f)         // P1.6
     , m_no_pref_action_idx(0)
+    , m_featurewise(featurewise)
+    , m_feature_models(nullptr)
+    , m_num_feature_models(0)
+    , m_lcb_pooling((LcbPoolingMode)lcb_pooling_mode)
+    , m_lcb_weight_lr(lcb_weight_lr)
+    , m_lcb_weight_reg(1.0f)
+    , m_cached_best_score(0.0f)
+    , m_cached_avg_score(0.0f)
+    , m_suppress_gating(suppress_gating)
+    , m_suppress_ratio(suppress_ratio)
+    , m_history_features(history_features)
+    , m_history_head(0)
+    , m_history_count(0)
 {
+    // Initialize score cache
+    for (uint32_t i = 0; i < 32; i++) m_cached_scores[i] = 0.0f;
+
+    // Initialize history queues
+    for (uint32_t i = 0; i < HISTORY_DEPTH; i++) {
+        m_recent_pcs[i] = 0;
+        m_recent_deltas[i] = 0;
+    }
+
     // Initialize reward ring buffer
     for (uint32_t i = 0; i < REWARD_WINDOW; i++) {
         m_reward_ring[i] = 0.0f;
@@ -344,8 +416,31 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
         if (m_actions[i] == 0) { m_no_pref_action_idx = i; break; }
     }
 
-    // Create the LinUCB engine
-    m_linucb = new LinUCB(cb_cfg);
+    // Create the LinUCB engine(s)
+    if (m_featurewise) {
+        init_featurewise_models(cb_cfg);
+        m_linucb = nullptr;  // monolithic model not used in feature-wise mode
+    } else {
+        m_linucb = new LinUCB(cb_cfg);
+    }
+
+    // P2.7: Validate history feature layout (L-CRIT-2 fix).
+    // History features occupy the last 2 slots ([num_features-2] and
+    // [num_features-1]).  To avoid silently overwriting stride_streak
+    // (index 11) and delta_var_ema (index 12), we require at least 14
+    // features when history is enabled:
+    //   [0..10]  = 11 baseline features (PC, Page, Offset, Delta, ...)
+    //   [11]     = stride_streak (P1.5, when num_features > 11)
+    //   [12..13] = history features (h_idx = num_features-2 = 12)
+    // If you also want delta variance EMA, use num_features >= 15:
+    //   [12]     = delta_var_ema (P2.7, when num_features > 12)
+    //   [13..14] = history features
+    if (m_history_features && m_num_features < 14) {
+        cerr << "FATAL: history_features requires num_features >= 13 "
+             << "(got " << m_num_features << "). "
+             << "Increase linucb_num_features by at least 2." << endl;
+        abort();
+    }
 
     // invoke_prefetcher() uses a stack-allocated features[MAX_FEATURES] buffer
     // on the hot path to avoid heap allocation. Runtime check (not assert) —
@@ -369,6 +464,7 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     m_stats.predict.called = 0; m_stats.predict.explore = 0; m_stats.predict.exploit = 0;
     m_stats.predict.out_of_bounds = 0; m_stats.predict.predicted = 0;
     m_stats.predict.multi_deg_called = 0; m_stats.predict.multi_deg_issued = 0;
+    m_stats.predict.gating_checked = 0; m_stats.predict.gating_suppressed = 0;
     m_stats.reward.called = 0; m_stats.reward.pt_not_found = 0; m_stats.reward.pt_found = 0;
     m_stats.reward.correct_timely = 0; m_stats.reward.correct_untimely = 0;
     m_stats.reward.incorrect = 0; m_stats.reward.no_pref = 0;
@@ -387,13 +483,266 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     for (int i = 0; i < NUM_REWARD_TYPES; i++) {
         m_stats.reward.reward_per_action[i].resize(m_max_actions, 0);
     }
+
+    // Feature-wise stats (P2.3)
+    m_stats.featurewise.pooled_predicts = 0;
+    m_stats.featurewise.weight_updates = 0;
+    for (uint32_t i = 0; i < 8; i++) {
+        m_stats.featurewise.model_agrees[i] = 0;
+    }
 }
 
 ContextualBanditPrefetcher::~ContextualBanditPrefetcher() {
-    delete m_linucb;
+    if (m_featurewise) {
+        if (m_feature_models) {
+            for (uint32_t i = 0; i < m_num_feature_models; i++) {
+                delete m_feature_models[i].model;
+            }
+            delete[] m_feature_models;
+        }
+    } else {
+        delete m_linucb;
+    }
     while (!m_pt.empty()) {
         delete m_pt.back();
         m_pt.pop_back();
+    }
+}
+
+/* =========================================================================
+ * P2.3: Feature-wise LinUCB — initialization, predict, train
+ * ========================================================================= */
+
+/* -------------------------------------------------------------------------
+ * init_featurewise_models(): Create sub-LinUCB models per feature group.
+ *
+ * Natural decomposition of the 11-feature layout:
+ *   Model 0 "PC"       : [0] PC hash
+ *   Model 1 "Page"     : [1] Page hash
+ *   Model 2 "Offset"   : [2] Block offset
+ *   Model 3 "Delta"    : [3,4] Delta + Delta sign
+ *   Model 4 "BW"       : [5] BW level
+ *   Model 5 "Interaction": [6,7] PC×Page + Offset×Delta
+ *   Model 6 "Context"  : [8,9,10] DeltaSig + Freq + Confidence
+ *   Model 7 "History"  : [m_num_features-2, m_num_features-1] (if enabled)
+ *
+ * Each model has its own A_inv, theta, b — total storage is SIMILAR to the
+ * monolithic model because sum(d_i^2) < D^2 for any decomposition of D features.
+ * ------------------------------------------------------------------------- */
+void ContextualBanditPrefetcher::init_featurewise_models(const LinUCB::Config& base_cfg)
+{
+    // Define feature groups as {start, count} pairs
+    struct { uint32_t start; uint32_t count; } groups[8];
+    uint32_t g = 0;
+
+    // Model 0: PC hash (feature index 0)
+    groups[g++] = {0, 1};
+
+    // Model 1: Page hash (feature index 1)
+    groups[g++] = {1, 1};
+
+    // Model 2: Block offset (feature index 2)
+    groups[g++] = {2, 1};
+
+    // Model 3: Delta + Delta sign (feature indices 3,4)
+    groups[g++] = {3, 2};
+
+    // Model 4: BW level (feature index 5) — only if m_num_features > 5
+    if (m_num_features > 5) {
+        groups[g++] = {5, 1};
+    }
+
+    // Model 5: Interaction features (feature indices 6,7) — only if m_num_features > 7
+    if (m_num_features > 7) {
+        groups[g++] = {6, 2};
+    }
+
+    // Model 6: Context features (feature indices 8+) if present
+    uint32_t context_start = 8;
+    if (m_num_features > 8) {
+        uint32_t context_count = m_num_features - 8;
+        // History features occupy the last 2 slots, exclude them
+        if (m_history_features && context_count > 2) {
+            context_count -= 2;
+        }
+        groups[g++] = {context_start, context_count};
+    }
+
+    // Model 7: History features (last 2 slots) if enabled
+    if (m_history_features && m_num_features >= 2) {
+        groups[g++] = {m_num_features - 2, 2};
+    }
+
+    m_num_feature_models = g;
+    m_feature_models = new LinUCBFeatureModel[g];
+
+    for (uint32_t i = 0; i < g; i++) {
+        LinUCB::Config cfg = base_cfg;
+        cfg.num_features = groups[i].count;
+        cfg.seed = base_cfg.seed + i * 137;  // different seed per model
+        m_feature_models[i].model = new LinUCB(cfg);
+        m_feature_models[i].feat_start = groups[i].start;
+        m_feature_models[i].feat_count = groups[i].count;
+        m_feature_models[i].weight = 1.0f / (float)g;
+        m_feature_models[i].accuracy_ema = 0.5f;
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * predict_featurewise(): Pool UCB scores from all sub-models.
+ *
+ * Each sub-model computes its own UCB scores.  The pooling layer aggregates:
+ *   LCB_POOL_MAX:      pooled[a] = max_i(scores_i[a])
+ *   LCB_POOL_WEIGHTED: pooled[a] = sum_i(weight[i] * scores_i[a])
+ *
+ * Returns argmax of pooled scores. Caches best/avg for suppression gating.
+ * ------------------------------------------------------------------------- */
+uint32_t ContextualBanditPrefetcher::predict_featurewise(const float* features)
+{
+    m_stats.featurewise.pooled_predicts++;
+
+    // Collect per-model scores.
+    // Each sub-model's predict_with_scores fills its own row in
+    // model_scores_arr.  We only need the scores for pooling; the
+    // per-model best_score/avg_score output params are not used here.
+    float model_scores_arr[8][32];  // max 8 models, each up to 32 actions
+
+    for (uint32_t m = 0; m < m_num_feature_models; m++) {
+        m_feature_models[m].model->predict_with_scores(
+            features + m_feature_models[m].feat_start,
+            model_scores_arr[m], nullptr, nullptr);
+    }
+
+    // Pool scores across models
+    uint32_t num_actions = m_max_actions;
+    if (num_actions > 32) num_actions = 32;
+
+    float best_pooled = -1e30f;
+    uint32_t best_action = 0;
+    float sum_pooled = 0.0f;
+
+    for (uint32_t a = 0; a < num_actions; a++) {
+        float pooled;
+        if (m_lcb_pooling == LCB_POOL_MAX) {
+            pooled = -1e30f;
+            for (uint32_t m = 0; m < m_num_feature_models; m++) {
+                if (model_scores_arr[m][a] > pooled) pooled = model_scores_arr[m][a];
+            }
+        } else {
+            // LCB_POOL_WEIGHTED
+            pooled = 0.0f;
+            for (uint32_t m = 0; m < m_num_feature_models; m++) {
+                pooled += m_feature_models[m].weight * model_scores_arr[m][a];
+            }
+        }
+        m_cached_scores[a] = pooled;
+        sum_pooled += pooled;
+
+        if (pooled > best_pooled) {
+            best_pooled = pooled;
+            best_action = a;
+        }
+    }
+
+    m_cached_best_score = best_pooled;
+    m_cached_avg_score = (num_actions > 0) ? (sum_pooled / (float)num_actions) : 0.0f;
+
+    // Track per-model agreement
+    for (uint32_t m = 0; m < m_num_feature_models && m < 8; m++) {
+        // Find this model's best action from its scores
+        uint32_t m_best = 0;
+        float m_best_score = model_scores_arr[m][0];
+        for (uint32_t a = 1; a < num_actions; a++) {
+            if (model_scores_arr[m][a] > m_best_score) {
+                m_best_score = model_scores_arr[m][a];
+                m_best = a;
+            }
+        }
+        if (m_best == best_action) {
+            m_stats.featurewise.model_agrees[m]++;
+        }
+    }
+
+    return best_action;
+}
+
+/* -------------------------------------------------------------------------
+ * train_featurewise(): Route update to all sub-models.
+ *
+ * Each sub-model receives the same scaled reward for the chosen action.
+ * Weights are updated via EMA of correctness (same as Tsetlin).
+ * ------------------------------------------------------------------------- */
+void ContextualBanditPrefetcher::train_featurewise(
+        const float* features, uint32_t action, float scaled_reward)
+{
+    for (uint32_t m = 0; m < m_num_feature_models; m++) {
+        m_feature_models[m].model->update(
+            features + m_feature_models[m].feat_start, action, scaled_reward);
+    }
+
+    // Weight update for LCB_POOL_WEIGHTED mode
+    if (m_lcb_pooling == LCB_POOL_WEIGHTED && m_lcb_weight_lr > 0.0f) {
+        m_stats.featurewise.weight_updates++;
+        float correct = (scaled_reward > 0.0f) ? 1.0f : 0.0f;
+        float weight_sum = 0.0f;
+        for (uint32_t m = 0; m < m_num_feature_models; m++) {
+            m_feature_models[m].accuracy_ema =
+                m_feature_models[m].accuracy_ema * (1.0f - m_lcb_weight_lr)
+                + m_lcb_weight_lr * correct;
+            // Softmax-like reweight: weight ∝ exp(accuracy_ema / temperature)
+            float temp = 0.5f;
+            m_feature_models[m].weight = expf(m_feature_models[m].accuracy_ema / temp);
+            weight_sum += m_feature_models[m].weight;
+        }
+        // Renormalize
+        if (weight_sum > 0.0f) {
+            for (uint32_t m = 0; m < m_num_feature_models; m++) {
+                m_feature_models[m].weight /= weight_sum;
+            }
+        }
+    }
+}
+
+/* =========================================================================
+ * P2.6: History / Path features
+ * ========================================================================= */
+
+/* -------------------------------------------------------------------------
+ * generate_history_features(): Append 2 features from recent PC/delta queues.
+ *
+ * Feature [num_features-2]: hash of recent PCs → [0, 1]
+ * Feature [num_features-1]: hash of recent deltas → [0, 1]
+ *
+ * The history features capture temporal context — what the program has been
+ * doing recently.  This is one of Pythia's key predictive signals.
+ * ------------------------------------------------------------------------- */
+void ContextualBanditPrefetcher::generate_history_features(float* features)
+{
+    if (!m_history_features || m_num_features < 2) return;
+
+    uint32_t h_idx = m_num_features - 2;
+
+    if (m_history_count > 0) {
+        // Feature h_idx: hash of recent PCs
+        uint64_t pc_hash = 0;
+        for (uint32_t i = 0; i < m_history_count && i < HISTORY_DEPTH; i++) {
+            uint32_t idx = (m_history_head + HISTORY_DEPTH - 1 - i) % HISTORY_DEPTH;
+            pc_hash ^= m_recent_pcs[idx] + (uint64_t)i * 0x9E3779B97F4A7C15ULL;
+        }
+        features[h_idx] = hash_to_float(pc_hash, 42);
+
+        // Feature h_idx+1: hash of recent deltas
+        uint64_t delta_hash = 0;
+        for (uint32_t i = 0; i < m_history_count && i < HISTORY_DEPTH; i++) {
+            uint32_t idx = (m_history_head + HISTORY_DEPTH - 1 - i) % HISTORY_DEPTH;
+            delta_hash ^= (uint64_t)(m_recent_deltas[idx] + 128)
+                        * (uint64_t)(i + 1) * 0x9E3779B97F4A7C15ULL;
+        }
+        features[h_idx + 1] = hash_to_float(delta_hash, 137);
+    } else {
+        // Not enough history yet — neutral features
+        features[h_idx] = 0.5f;
+        features[h_idx + 1] = 0.5f;
     }
 }
 
@@ -517,6 +866,11 @@ void ContextualBanditPrefetcher::generate_features(
     for (uint32_t i = 13; i < m_num_features; i++) {
         features[i] = 0.0f;
     }
+
+    // P2.6: History/path features (overwrites last 2 slots when enabled)
+    if (m_history_features) {
+        generate_history_features(features);
+    }
 }
 
 /* -------------------------------------------------------------------------
@@ -600,6 +954,21 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         } else {
             lot_entry.stride_streak = 1;
         }
+
+        // P2.7: delta variance EMA (L-CRIT-1 fix).
+        // EMA of |delta - prev_delta| / 64, normalized to [0,1].
+        // Replaces the old placeholder (always 0.0f) with a real signal.
+        // Low variance → stable, predictable stride → high confidence.
+        // High variance → irregular access → low confidence.
+        // EMA decay 7/8 keeps 87.5% of history, updates 12.5% from new sample.
+        float delta_change = (float)((delta > lot_entry.last_delta)
+            ? (delta - lot_entry.last_delta)
+            : (lot_entry.last_delta - delta));
+        float delta_change_norm = delta_change / 64.0f;
+        if (delta_change_norm > 1.0f) delta_change_norm = 1.0f;
+        lot_entry.delta_var_ema = lot_entry.delta_var_ema * 0.875f
+                                + delta_change_norm * 0.125f;
+
         lot_entry.last_delta = delta;
     } else {
         // First access to this page or page collision: reset all
@@ -610,15 +979,25 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         lot_entry.last_confidence = 0.0f;
         lot_entry.stride_streak = 0;     // P1.5
         lot_entry.last_delta = delta;    // P1.5
+        lot_entry.delta_var_ema = 0.0f; // P2.7: reset variance on new page
     }
     delta_sig = lot_entry.delta_sig;
     access_count = lot_entry.access_count;
     last_confidence = lot_entry.last_confidence;
     stride_streak = lot_entry.stride_streak;  // P1.5
+    float delta_var_ema = lot_entry.delta_var_ema;  // P2.7
 
     lot_entry.page_tag = page;
     lot_entry.last_offset = (int32_t)offset;
     lot_entry.valid = true;
+
+    // ---- P2.6: Update history queues ----
+    if (m_history_features) {
+        m_recent_pcs[m_history_head] = pc;
+        m_recent_deltas[m_history_head] = delta;
+        m_history_head = (m_history_head + 1) % HISTORY_DEPTH;
+        if (m_history_count < HISTORY_DEPTH) m_history_count++;
+    }
 
     // ---- Step 3: Generate features ----
     // Stack-allocated to avoid heap allocation on the hot path (every demand request).
@@ -626,6 +1005,13 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     float features[MAX_FEATURES];
     generate_features(pc, page, offset, delta, m_bw_level, delta_sig,
                       access_count, last_confidence, stride_streak, features);
+
+    // P2.7 (L-CRIT-1 fix): Delta variance EMA — replaces the old always-0.0f
+    // placeholder with a real signal.  Feature 12 now reflects actual delta
+    // stability, giving LinUCB a useful confidence-related signal.
+    if (m_num_features > 12) {
+        features[12] = delta_var_ema;
+    }
 
     // ---- Step 4: Predict action ----
     m_stats.predict.called++;
@@ -646,11 +1032,21 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         //      exploration rate regardless.
         //   3. P1.6: random probes are NEVER suppressed by adaptive
         //      aggressiveness — they are the mechanism for breaking deadlocks.
+        // P2.3 FIX: still run predict_featurewise in exploration mode to
+        // keep m_cached_best_score / m_cached_avg_score fresh for downstream
+        // consumers (confidence feedback, dynamic degree, suppression gating).
+        if (m_featurewise) {
+            predict_featurewise(features);  // update caches
+        }
         action_index = m_action_gen(m_rng);
         m_stats.predict.explore++;
     } else {
-        // Exploit: use LinUCB prediction
-        action_index = m_linucb->predict(features);
+        // Exploit: use LinUCB prediction (monolithic or feature-wise)
+        if (m_featurewise) {
+            action_index = predict_featurewise(features);
+        } else {
+            action_index = m_linucb->predict(features);
+        }
         m_stats.predict.exploit++;
         is_exploit = true;
     }
@@ -722,11 +1118,75 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         // else: still in warmup → suppression disabled, let the bandit learn
     }
 
+    // ---- P2.5: UCB score ratio gating ----
+    // After P1.6 suppression and normal prediction, check whether the best
+    // UCB score significantly exceeds the average.  If all arms have similar
+    // scores, there is no clear winner → issuing a prefetch would be random
+    // speculation.  This catches the common LinUCB failure mode of ~38M
+    // prefetches issued at near-random accuracy.
+    //
+    // P2.5 COLD-START FIX: During cold start (all theta ≈ 0), all UCB scores
+    // are dominated by the exploration bonus term, giving ratio ≈ 1.0 for all
+    // actions.  Without warmup protection, the gate would suppress EVERY
+    // exploitation attempt → no prefetches → no rewards → permanent deadlock.
+    // Fix: (a) gate is disabled until WARMUP_SAMPLES accumulate (same as P1.6);
+    // (b) after warmup, a 5% escape probability is retained so the bandit can
+    // recover if the model drifts into an over-conservative state.
+    //
+    // Only applies during exploitation (not ε-greedy probes) and only when
+    // the action is not already "no-prefetch".
+    if (m_suppress_gating && m_actions[action_index] != 0 && is_exploit) {
+        m_stats.predict.gating_checked++;
+
+        // P2.5(a): require warmup — same threshold as P1.6 to give the
+        // bandit enough time to accumulate meaningful reward feedback
+        // before confidence-based gating activates.
+        if (m_reward_count >= (float)WARMUP_SAMPLES) {
+
+            // For monolithic mode, we need to compute scores. For feature-wise
+            // mode, scores are already cached from predict_featurewise().
+            if (!m_featurewise) {
+                // Compute scores on-demand (slight overhead, only when gating is active)
+                float scores[32];
+                m_linucb->predict_with_scores(features, scores,
+                                               &m_cached_best_score, &m_cached_avg_score);
+            }
+
+            // Ratio = |best| / (|avg| + ε).  Uses absolute values because
+            // UCB scores can be negative in pathological cases; the key
+            // question is "does the best action stand out from the pack?"
+            // regardless of whether scores are positive or negative.
+            float ratio = (m_cached_avg_score > 0.0f || m_cached_avg_score < 0.0f)
+                ? fabsf(m_cached_best_score) / (fabsf(m_cached_avg_score) + 1e-8f)
+                : 1.0f;
+
+            if (ratio < m_suppress_ratio) {
+                // P2.5(b): probabilistic, not deterministic.  95% follow the
+                // gate, 5% escape → prevents deadlock if model drifts.
+                if (m_dist(m_rng) < 0.95f) {
+                    action_index = m_no_pref_action_idx;
+                    m_stats.predict.gating_suppressed++;
+                }
+            }
+        }
+        // else: still in warmup → gating disabled, let the bandit learn
+    }
+
     // ---- P1.4: Store confidence for next prediction on this page ----
     // Confidence = |expected_reward| for the chosen action.
     if (m_num_features > 10) {  // only when confidence feature is enabled
-        float conf = m_linucb->get_expected_reward(features, action_index);
-        if (conf < 0.0f) conf = -conf;  // absolute value
+        float conf;
+        if (m_featurewise) {
+            // Use cached best score from pooling
+            conf = (m_cached_best_score > 0.0f)
+                ? m_cached_best_score / ((float)m_num_feature_models * 0.5f)
+                : 0.0f;
+            if (conf < 0.0f) conf = 0.0f;
+            if (conf > 1.0f) conf = 1.0f;
+        } else {
+            conf = m_linucb->get_expected_reward(features, action_index);
+            if (conf < 0.0f) conf = -conf;  // absolute value
+        }
         lot_entry.last_confidence = conf;
     }
 
@@ -949,7 +1409,11 @@ void ContextualBanditPrefetcher::train_from_reward(CBPrefetchTrackerEntry* entry
         m_reward_head = (m_reward_head + 1) % REWARD_WINDOW;
         if (m_reward_count < (float)REWARD_WINDOW) m_reward_count += 1.0f;
 
-        m_linucb->update(entry->features, action, scaled_reward);
+        if (m_featurewise) {
+            train_featurewise(entry->features, action, scaled_reward);
+        } else {
+            m_linucb->update(entry->features, action, scaled_reward);
+        }
         m_stats.learn.learned_positive++;
         m_stats.reward.reward_per_action[reward_type][action]++;
         return;
@@ -980,7 +1444,11 @@ void ContextualBanditPrefetcher::train_from_reward(CBPrefetchTrackerEntry* entry
             m_reward_count += 1.0f;
         }
 
-        m_linucb->update(entry->features, action, scaled_reward);
+        if (m_featurewise) {
+            train_featurewise(entry->features, action, scaled_reward);
+        } else {
+            m_linucb->update(entry->features, action, scaled_reward);
+        }
 
         if (raw_reward > 0) {
             m_stats.learn.learned_positive++;
@@ -1039,7 +1507,13 @@ uint32_t ContextualBanditPrefetcher::get_dyn_pref_degree(
         return 1;
     }
 
-    float expected = m_linucb->get_expected_reward(features, action_index);
+    float expected;
+    if (m_featurewise) {
+        // Use cached best score from pooling as confidence proxy
+        expected = m_cached_best_score;
+    } else {
+        expected = m_linucb->get_expected_reward(features, action_index);
+    }
     // Clamp to a reasonable range to prevent a single noisy prediction
     // from triggering max degree on garbage features during early training.
     //
@@ -1162,6 +1636,21 @@ void ContextualBanditPrefetcher::print_config() {
     }
     cout << "linucb_high_bw_thresh " << (int)m_high_bw_thresh << endl;
     cout << "linucb_epsilon " << m_epsilon << endl;
+    cout << "linucb_featurewise " << (m_featurewise ? "true" : "false")
+         << " (P2.3)" << endl;
+    if (m_featurewise) {
+        cout << "linucb_featurewise_pooling "
+             << (m_lcb_pooling == LCB_POOL_MAX ? "max" : "weighted")
+             << " num_models=" << m_num_feature_models
+             << " weight_lr=" << m_lcb_weight_lr << endl;
+    }
+    cout << "linucb_suppress_gating " << (m_suppress_gating ? "true" : "false")
+         << " (P2.5)" << endl;
+    if (m_suppress_gating) {
+        cout << "linucb_suppress_ratio " << m_suppress_ratio << endl;
+    }
+    cout << "linucb_history_features " << (m_history_features ? "true" : "false")
+         << " (P2.6)" << endl;
     cout << endl;
 }
 
@@ -1182,6 +1671,8 @@ void ContextualBanditPrefetcher::dump_stats() {
     cout << "linucb_predict_predicted " << m_stats.predict.predicted << endl;
     cout << "linucb_predict_multi_deg_called " << m_stats.predict.multi_deg_called << endl;
     cout << "linucb_predict_multi_deg_issued " << m_stats.predict.multi_deg_issued << endl;
+    cout << "linucb_predict_gating_checked " << m_stats.predict.gating_checked << endl;
+    cout << "linucb_predict_gating_suppressed " << m_stats.predict.gating_suppressed << endl;
 
     for (uint32_t i = 0; i < m_max_actions; i++) {
         cout << "linucb_predict_action_" << m_actions[i] << " "
@@ -1231,6 +1722,31 @@ void ContextualBanditPrefetcher::dump_stats() {
     cout << "linucb_register_fill_set " << m_stats.register_fill.set << endl;
     cout << endl;
 
+    // Feature-wise stats (P2.3)
+    if (m_featurewise) {
+        cout << "linucb_featurewise_pooled_predicts " << m_stats.featurewise.pooled_predicts << endl;
+        cout << "linucb_featurewise_weight_updates " << m_stats.featurewise.weight_updates << endl;
+        for (uint32_t m = 0; m < m_num_feature_models && m < 8; m++) {
+            cout << "linucb_featurewise_model_" << m
+                 << "_agree " << m_stats.featurewise.model_agrees[m] << endl;
+        }
+        for (uint32_t m = 0; m < m_num_feature_models && m < 8; m++) {
+            cout << "linucb_featurewise_model_" << m
+                 << "_weight " << fixed << setprecision(4)
+                 << m_feature_models[m].weight << endl;
+        }
+        cout << endl;
+    }
+
     // LinUCB internal state stats
-    m_linucb->dump_state();
+    if (m_featurewise) {
+        for (uint32_t m = 0; m < m_num_feature_models; m++) {
+            cout << "--- LinUCB_sub_" << m << " (feat_start="
+                 << m_feature_models[m].feat_start
+                 << " count=" << m_feature_models[m].feat_count << ") ---" << endl;
+            m_feature_models[m].model->dump_state();
+        }
+    } else {
+        m_linucb->dump_state();
+    }
 }

@@ -116,8 +116,15 @@ public:
     // Returns 0 if there is only one action class.
     int32_t get_second_best_class_sum() const;
 
+    // Predict and return the raw class_sum vote vector.
+    // Used by feature-wise pooling: each sub-TM computes its votes, the
+    // pooling layer aggregates them, then argmax over pooled votes.
+    // Returns pointer to internal m_class_sum (valid until next predict/update call).
+    const int32_t* predict_with_votes(const int32_t* features);
+
     // ---- Accessors ----
     uint32_t num_actions() const { return m_num_actions; }
+    uint32_t num_features() const { return m_num_features; }
 
     // ---- Debug ----
     void dump_state() const;
@@ -176,6 +183,21 @@ public:
 
 
 /*===========================================================================
+ * Tsetlin Feature Group (P2.3: Feature-wise TM decomposition)
+ *
+ * Each TsetlinFeatureGroup holds one sub-TM responsible for a contiguous
+ * slice of the flat binary features[] array.  Multiple sub-TMs run in
+ * parallel; their vote vectors are pooled (max or weighted sum) to produce
+ * the final action selection.
+ *===========================================================================*/
+struct TsetlinFeatureGroup {
+    TsetlinMachine* tm;
+    uint32_t        feat_start;    // offset into the flat features[] array
+    uint32_t        feat_count;    // number of features used by this sub-TM
+    const char*     name;          // debug label ("PC+Page", "Stride", "Context")
+};
+
+/*===========================================================================
  * Tsetlin Prefetcher: Wraps the TM for ChampSim integration
  *===========================================================================*/
 
@@ -193,6 +215,34 @@ public:
 private:
     // ---------- Core TM ----------
     TsetlinMachine*  m_tm;
+
+    // ---------- Feature-wise TM decomposition (P2.3) ----------
+    // When enabled, m_feature_tms replaces the monolithic m_tm.
+    // Each sub-TM sees only one feature group; their vote vectors are
+    // pooled (max or weighted sum) to produce the final action.
+    bool                  m_featurewise;
+    TsetlinFeatureGroup*  m_feature_tms;
+    uint32_t              m_num_feature_tms;
+
+    enum PoolingMode { POOL_WEIGHTED = 0, POOL_MAX = 1 };
+    PoolingMode           m_pooling_mode;
+    float*                m_tm_weights;        // [num_feature_tms] for weighted-sum pooling
+    float                 m_tm_weight_lr;      // EMA decay for weight updates (0=disabled)
+
+    // Cached pooled vote vector from the last feature-wise predict.
+    // Filled by predict_featurewise(), consumed by get_dyn_pref_degree()
+    // and confidence feedback (P1.4).  Stack-allocated to avoid heap
+    // allocation on the hot path.
+    static constexpr uint32_t MAX_POOLED_ACTIONS = 32;
+    int32_t              m_pooled_class_sums[MAX_POOLED_ACTIONS];
+
+    // ---------- Tile coding / Hash encoding mode (P2.4) ----------
+    // 0 = hash encoding (original XOR+mix, no locality)
+    // 1 = tile coding (overlapping tilings, preserves locality)
+    enum EncodingMode { ENCODING_HASH = 0, ENCODING_TILE = 1 };
+    EncodingMode         m_encoding;
+    uint32_t             m_num_tilings;
+    uint32_t             m_tiles_per_tiling;
 
     // ---------- Feature configuration ----------
     uint32_t         m_num_features;
@@ -317,6 +367,13 @@ private:
             uint64_t set;
         } register_fill;
 
+        // Feature-wise TM stats (P2.3)
+        struct {
+            uint64_t pooled_predicts;    // times feature-wise predict was used
+            uint64_t group_predicts[8];  // per-group: times this group's vote matched final action
+            uint64_t weight_updates;     // times sub-TM weights were updated
+        } featurewise;
+
     } m_stats;
 
 public:
@@ -337,7 +394,13 @@ public:
                       uint32_t freq_bits = 0,
                       uint32_t conf_bits = 0,
                       float epsilon_init = 0.005f,
-                      uint64_t warmup_invocations = 0);
+                      uint64_t warmup_invocations = 0,
+                      bool featurewise = false,
+                      int32_t pooling_mode = 0,
+                      float tm_weight_lr = 0.01f,
+                      int32_t encoding_mode = 0,
+                      uint32_t num_tilings = 4,
+                      uint32_t tiles_per_tiling = 16);
 
     ~TsetlinPrefetcher();
 
@@ -363,6 +426,23 @@ private:
                            int32_t delta, uint8_t bw_level, uint32_t delta_sig,
                            uint32_t access_count, int32_t last_confidence,
                            int32_t* features);
+
+    // P2.4: Tile-coding alternative to hash encoding for PC+Page features.
+    // Produces num_tilings * tiles_per_tiling binary features, one-hot per tiling.
+    // Similar (PC, page) inputs map to overlapping tiles → automatic generalization.
+    void generate_tile_features(uint64_t pc, uint64_t page,
+                                int32_t* features, uint32_t feat_start);
+
+    // P2.3: Initialize feature-wise sub-TMs. Called from constructor when
+    // m_featurewise==true. Allocates proportional clauses per group.
+    void init_featurewise_tms(const TsetlinMachine::Config& base_cfg);
+
+    // P2.3: Feature-wise predict — runs each sub-TM, pools their vote vectors,
+    // returns argmax. Caches pooled votes in m_pooled_class_sums.
+    uint32_t predict_featurewise(const int32_t* features);
+
+    // P2.3: Feature-wise train — routes the same reward/update to all sub-TMs.
+    void train_featurewise(const int32_t* features, uint32_t action, bool is_positive);
 
     // Compute reward for a PT entry
     int32_t compute_reward(TMPrefetchTrackerEntry* entry, int32_t reward_type);

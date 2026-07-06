@@ -85,6 +85,13 @@ public:
     // Returns: action index in [0, num_actions).
     uint32_t predict(const float* features);
 
+    // Predict with full score information.
+    // Fills out_scores[0..num_actions-1] with UCB scores and optionally returns
+    // best_score / avg_score for suppression gating.
+    // Returns: best action index.
+    uint32_t predict_with_scores(const float* features, float* out_scores,
+                                  float* out_best_score, float* out_avg_score);
+
     // Online training update using Sherman-Morrison.
     // features: context vector at prediction time
     // action: the chosen action index
@@ -145,6 +152,22 @@ public:
 
 
 /*===========================================================================
+ * LinUCB Feature Model (P2.3: Feature-wise LinUCB decomposition)
+ *
+ * Each LinUCBFeatureModel holds one sub-LinUCB responsible for a contiguous
+ * slice of the flat float features[] array.  Multiple sub-models run in
+ * parallel; their UCB scores are pooled (max or weighted sum) to produce
+ * the final action selection.
+ *===========================================================================*/
+struct LinUCBFeatureModel {
+    LinUCB*  model;
+    uint32_t feat_start;        // offset into flat features[] array
+    uint32_t feat_count;        // number of features for this sub-model
+    float    weight;            // for weighted-sum pooling
+    float    accuracy_ema;      // EMA of correctness rate
+};
+
+/*===========================================================================
  * Contextual Bandit Prefetcher: Wraps LinUCB for ChampSim integration
  *===========================================================================*/
 
@@ -162,6 +185,24 @@ public:
 private:
     // ---------- Core LinUCB ----------
     LinUCB*          m_linucb;
+
+    // ---------- Feature-wise LinUCB decomposition (P2.3) ----------
+    // When enabled, m_feature_models replaces the monolithic m_linucb.
+    // Each sub-model sees only one feature group; their UCB scores are
+    // pooled (max or weighted sum) to produce the final action.
+    bool                  m_featurewise;
+    LinUCBFeatureModel*   m_feature_models;
+    uint32_t              m_num_feature_models;
+    enum LcbPoolingMode { LCB_POOL_WEIGHTED = 0, LCB_POOL_MAX = 1 };
+    LcbPoolingMode        m_lcb_pooling;
+    float                 m_lcb_weight_lr;
+    float                 m_lcb_weight_reg;    // prior strength for weight softmax
+
+    // Cached scores from the last predict for downstream use
+    // (suppression gating, dynamic degree, confidence feedback).
+    float    m_cached_best_score;
+    float    m_cached_avg_score;
+    float    m_cached_scores[32];  // max 32 actions
 
     // ---------- Feature configuration ----------
     uint32_t         m_num_features;
@@ -206,6 +247,7 @@ private:
         float    last_confidence = 0.0f; // |expected_reward| from last prediction (P1.4)
         int32_t  last_delta = 0;     // most recent delta value (P1.5)
         uint8_t  stride_streak = 0;  // consecutive same-delta count (P1.5)
+        float    delta_var_ema = 0.0f; // EMA of |delta - prev_delta| / 64 (P2.7)
         bool     valid = false;
     };
     LastOffsetEntry m_last_offset_table[LAST_OFFSET_TABLE_SIZE];
@@ -251,6 +293,25 @@ private:
     float  m_positive_sum;                  // running sum of positive-reward fraction (P1.6)
     uint32_t m_no_pref_action_idx;          // cached index of action=0
 
+    // ---------- UCB score ratio gating (P2.5) ----------
+    // Suppress prefetch when the best UCB score is not significantly better
+    // than the average — all actions have similar scores → no clear winner,
+    // issuing a prefetch would be random speculation.
+    bool    m_suppress_gating;
+    float   m_suppress_ratio;               // threshold: best_score / avg_score must exceed this
+
+    // ---------- Path/history features (P2.6) ----------
+    // Maintain small queues of recent PCs and deltas to capture temporal context.
+    // Two extra features are appended after the existing features:
+    //   [num_features-2]: hash of recent PCs
+    //   [num_features-1]: hash of recent deltas
+    static constexpr uint32_t HISTORY_DEPTH = 4;
+    bool     m_history_features;
+    uint64_t m_recent_pcs[HISTORY_DEPTH];     // circular buffer
+    int32_t  m_recent_deltas[HISTORY_DEPTH];  // circular buffer
+    uint32_t m_history_head;                  // write position
+    uint32_t m_history_count;                 // entries filled so far
+
     // ---------- Statistics ----------
     struct {
         struct {
@@ -268,6 +329,8 @@ private:
             uint64_t predicted;
             uint64_t multi_deg_called;       // times multi-degree was invoked
             uint64_t multi_deg_issued;       // extra prefetches from multi-degree
+            uint64_t gating_checked;         // P2.5: times score ratio was checked
+            uint64_t gating_suppressed;      // P2.5: times gating forced no-prefetch
             std::vector<uint64_t> action_dist;
             std::vector<uint64_t> issue_dist;
             std::vector<uint64_t> deg_histogram;       // which degree was selected
@@ -304,6 +367,13 @@ private:
             uint64_t set;
         } register_fill;
 
+        // Feature-wise stats (P2.3)
+        struct {
+            uint64_t pooled_predicts;
+            uint64_t model_agrees[8];   // per-model agreement with final action
+            uint64_t weight_updates;
+        } featurewise;
+
     } m_stats;
 
 public:
@@ -319,7 +389,13 @@ public:
                                const std::vector<int32_t>& dyn_deg_thresh = {},
                                const std::vector<int32_t>& dyn_deg_values = {},
                                const std::vector<int32_t>& dyn_deg_thresh_hbw = {},
-                               const std::vector<int32_t>& dyn_deg_values_hbw = {});
+                               const std::vector<int32_t>& dyn_deg_values_hbw = {},
+                               bool featurewise = false,
+                               int32_t lcb_pooling_mode = 0,
+                               float lcb_weight_lr = 0.01f,
+                               bool suppress_gating = false,
+                               float suppress_ratio = 1.5f,
+                               bool history_features = false);
 
     ~ContextualBanditPrefetcher();
 
@@ -345,6 +421,22 @@ private:
                            int32_t delta, uint8_t bw_level, uint32_t delta_sig,
                            uint32_t access_count, float last_confidence,
                            uint8_t stride_streak, float* features);
+
+    // P2.6: Generate history (path) features from recent PC/delta queues.
+    // Appends 2 features at indices [num_features-2, num_features-1].
+    void generate_history_features(float* features);
+
+    // P2.3: Initialize feature-wise sub-models. Called from constructor when
+    // m_featurewise==true. Defines natural feature groups (PC, Page, Offset,
+    // Delta, Interaction, Context) and creates per-group LinUCB instances.
+    void init_featurewise_models(const LinUCB::Config& base_cfg);
+
+    // P2.3: Feature-wise predict — runs each sub-model, pools their UCB scores,
+    // returns argmax. Caches best/avg scores in m_cached_* members.
+    uint32_t predict_featurewise(const float* features);
+
+    // P2.3: Feature-wise train — routes the same scaled reward to all sub-models.
+    void train_featurewise(const float* features, uint32_t action, float scaled_reward);
 
     // Hash a 64-bit value to a normalized float in [0, 1]
     inline float hash_to_float(uint64_t value, uint32_t seed) const;
