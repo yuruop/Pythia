@@ -11,7 +11,7 @@
 
 
 # configurations
-BASE = --warmup_instructions=10000000 --simulation_instructions=50000000
+BASE = --warmup_instructions=20000000 --simulation_instructions=100000000
 NOPREF = --config=$(PYTHIA_HOME)/config/nopref.ini
 SPP_DEV2 = --l2c_prefetcher_types=spp_dev2 --config=$(PYTHIA_HOME)/config/spp_dev2.ini
 MLOP = --l2c_prefetcher_types=mlop --config=$(PYTHIA_HOME)/config/mlop.ini

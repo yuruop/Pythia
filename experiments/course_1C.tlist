@@ -47,23 +47,23 @@ TRACE=$(PYTHIA_HOME)/traces/620.omnetpp_s-141B.champsimtrace.xz
 KNOBS=
 
 NAME=ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M
-TRACE=$(PYTHIA_HOME)/traces/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
+TRACE=$(PYTHIA_HOME)/traces/ligra/ligra_BFS.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
 
 NAME=ligra_PageRank.com-lj.ungraph.gcc_6.3.0_O3.drop_500M.length_250M
-TRACE=$(PYTHIA_HOME)/traces/ligra_PageRank.com-lj.ungraph.gcc_6.3.0_O3.drop_500M.length_250M.champsimtrace.xz
+TRACE=$(PYTHIA_HOME)/traces/ligra/ligra_PageRank.com-lj.ungraph.gcc_6.3.0_O3.drop_500M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
 
 NAME=ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M
-TRACE=$(PYTHIA_HOME)/traces/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
+TRACE=$(PYTHIA_HOME)/traces/ligra/ligra_Triangle.com-lj.ungraph.gcc_6.3.0_O3.drop_3500M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
 
 NAME=parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M
-TRACE=$(PYTHIA_HOME)/traces/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz
+TRACE=$(PYTHIA_HOME)/traces/parsec2.1/parsec_2.1.canneal.simlarge.prebuilt.drop_1250M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
 
 NAME=parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M
-TRACE=$(PYTHIA_HOME)/traces/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz
+TRACE=$(PYTHIA_HOME)/traces/parsec2.1/parsec_2.1.streamcluster.simlarge.prebuilt.drop_0M.length_250M.champsimtrace.xz
 KNOBS=--warmup_instructions=10000000 --simulation_instructions=40000000
 
 NAME=cassandra_phase0_core0
