@@ -328,6 +328,11 @@ namespace knob
 	bool     linucb_suppress_gating = false;         // P2.5: UCB score ratio gating
 	float    linucb_suppress_ratio = 1.5f;           // P2.5: best/avg threshold
 	bool     linucb_history_features = false;        // P2.6: path/history features
+
+	/* Meta-Selector Prefetcher knobs */
+	float    meta_selector_conf_alpha = 0.01f;
+	float    meta_selector_epsilon = 0.05f;
+	uint64_t meta_selector_rng_seed = 42;
 }
 
 void parse_args(int argc, char *argv[])
@@ -1355,6 +1360,11 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "linucb_suppress_gating"))            { knob::linucb_suppress_gating = (bool)atoi(value); }
 		else if (MATCH("", "linucb_suppress_ratio"))             { knob::linucb_suppress_ratio = atof(value); }
 		else if (MATCH("", "linucb_history_features"))           { knob::linucb_history_features = (bool)atoi(value); }
+
+		/* Meta-Selector Prefetcher knobs */
+		else if (MATCH("", "meta_selector_conf_alpha"))  { knob::meta_selector_conf_alpha = atof(value); }
+		else if (MATCH("", "meta_selector_epsilon"))     { knob::meta_selector_epsilon = atof(value); }
+		else if (MATCH("", "meta_selector_rng_seed"))    { knob::meta_selector_rng_seed = atol(value); }
 
     else
     {

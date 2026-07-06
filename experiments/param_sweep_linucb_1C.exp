@@ -24,6 +24,7 @@
 # =========================================================================
 BASE = --warmup_instructions=20000000 --simulation_instructions=100000000
 LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
+META_SELECTOR = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector.ini
 
 # =========================================================================
 # Baseline (default parameters from config/linucb.ini)

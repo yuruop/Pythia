@@ -391,6 +391,7 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     , m_lcb_weight_reg(1.0f)
     , m_cached_best_score(0.0f)
     , m_cached_avg_score(0.0f)
+    , m_last_confidence(0.0f)
     , m_suppress_gating(suppress_gating)
     , m_suppress_ratio(suppress_ratio)
     , m_history_features(history_features)
@@ -1032,11 +1033,25 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         //      exploration rate regardless.
         //   3. P1.6: random probes are NEVER suppressed by adaptive
         //      aggressiveness — they are the mechanism for breaking deadlocks.
-        // P2.3 FIX: still run predict_featurewise in exploration mode to
-        // keep m_cached_best_score / m_cached_avg_score fresh for downstream
-        // consumers (confidence feedback, dynamic degree, suppression gating).
+        // P2.3 FIX: still run predict in exploration mode to keep
+        // m_cached_best_score / m_cached_avg_score fresh for downstream
+        // consumers (confidence feedback, dynamic degree, suppression gating,
+        // and meta-selector confidence query).
+        //
+        // P3 FIX: previously only featurewise was refreshed; monolithic mode
+        // also needs predict() to update m_cached_best_score for the
+        // meta-selector get_last_confidence().  Without this, monolithic
+        // LinUCB reports stale confidence during exploration steps.
         if (m_featurewise) {
             predict_featurewise(features);  // update caches
+        } else {
+            // Run predict_with_scores to refresh m_cached_best/avg for
+            // confidence queries.  The return value is discarded (we use
+            // the random action below), but the cached scores are updated.
+            float scores[32];
+            m_linucb->predict_with_scores(features, scores,
+                                           &m_cached_best_score,
+                                           &m_cached_avg_score);
         }
         action_index = m_action_gen(m_rng);
         m_stats.predict.explore++;
@@ -1174,7 +1189,9 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
 
     // ---- P1.4: Store confidence for next prediction on this page ----
     // Confidence = |expected_reward| for the chosen action.
-    if (m_num_features > 10) {  // only when confidence feature is enabled
+    //
+    // Also always compute normalized confidence for the meta-selector.
+    {
         float conf;
         if (m_featurewise) {
             // Use cached best score from pooling
@@ -1186,8 +1203,17 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         } else {
             conf = m_linucb->get_expected_reward(features, action_index);
             if (conf < 0.0f) conf = -conf;  // absolute value
+            // Normalize: max expected |reward| ≈ num_features * 0.5
+            float conf_max = (float)m_num_features * 0.5f;
+            if (conf > conf_max) conf = conf_max;
+            conf = conf / (conf_max + 1e-8f);
         }
-        lot_entry.last_confidence = conf;
+        // Always store for meta-selector (independent of feature count check)
+        m_last_confidence = conf;
+
+        if (m_num_features > 10) {  // only when confidence feature slot exists
+            lot_entry.last_confidence = conf;
+        }
     }
 
     // ---- Step 5: Issue prefetch or track no-prefetch ----

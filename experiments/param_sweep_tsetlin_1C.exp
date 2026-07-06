@@ -24,6 +24,7 @@
 # =========================================================================
 BASE = --warmup_instructions=20000000 --simulation_instructions=100000000
 TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
+META_SELECTOR = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector.ini
 
 # =========================================================================
 # Baseline (default parameters from config/tsetlin.ini)
@@ -31,54 +32,68 @@ TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.
 #   epsilon_init=0.05, warmup=100K, pt_size=512, dyn_degree=enabled
 # =========================================================================
 tsetlin_baseline			$(BASE) $(TSETLIN)
+meta_selector_baseline			$(BASE) $(META_SELECTOR)
 
 # =========================================================================
 # Clause Count Sweep (default: 128)
 #   Controls model capacity — more clauses = more patterns can be learned
 # =========================================================================
 tsetlin_cls64				$(BASE) $(TSETLIN) --tsetlin_num_clauses=64
+meta_selector_cls64			$(BASE) $(META_SELECTOR) --tsetlin_num_clauses=64
 tsetlin_cls256				$(BASE) $(TSETLIN) --tsetlin_num_clauses=256
+meta_selector_cls256			$(BASE) $(META_SELECTOR) --tsetlin_num_clauses=256
 
 # =========================================================================
 # Precision Parameter s Sweep (default: 3.0)
 #   Controls pattern specificity — higher s → more specific patterns
 # =========================================================================
 tsetlin_s1.5				$(BASE) $(TSETLIN) --tsetlin_s=1.5
+meta_selector_s1.5			$(BASE) $(META_SELECTOR) --tsetlin_s=1.5
 tsetlin_s5.0				$(BASE) $(TSETLIN) --tsetlin_s=5.0
+meta_selector_s5.0			$(BASE) $(META_SELECTOR) --tsetlin_s=5.0
 tsetlin_s10.0				$(BASE) $(TSETLIN) --tsetlin_s=10.0
+meta_selector_s10.0			$(BASE) $(META_SELECTOR) --tsetlin_s=10.0
 
 # =========================================================================
 # Voting Threshold T Sweep (default: 8)
 #   Controls resource allocation sensitivity — higher T → more tolerant
 # =========================================================================
 tsetlin_T4				$(BASE) $(TSETLIN) --tsetlin_threshold=4
+meta_selector_T4			$(BASE) $(META_SELECTOR) --tsetlin_threshold=4
 tsetlin_T16				$(BASE) $(TSETLIN) --tsetlin_threshold=16
+meta_selector_T16			$(BASE) $(META_SELECTOR) --tsetlin_threshold=16
 
 # =========================================================================
 # States per TA Sweep (default: 8 → 16 total states)
 #   Controls learning inertia — fewer states = faster adaptation
 # =========================================================================
 tsetlin_st4				$(BASE) $(TSETLIN) --tsetlin_num_states=4
+meta_selector_st4			$(BASE) $(META_SELECTOR) --tsetlin_num_states=4
 tsetlin_st16				$(BASE) $(TSETLIN) --tsetlin_num_states=16
+meta_selector_st16			$(BASE) $(META_SELECTOR) --tsetlin_num_states=16
 
 # =========================================================================
 # Epsilon (Exploration Rate) Sweep (default: 0.005)
 #   Controls random exploration vs exploitation
 # =========================================================================
 tsetlin_eps0.001				$(BASE) $(TSETLIN) --tsetlin_epsilon=0.001
+meta_selector_eps0.001			$(BASE) $(META_SELECTOR) --tsetlin_epsilon=0.001
 tsetlin_eps0.01				$(BASE) $(TSETLIN) --tsetlin_epsilon=0.01
+meta_selector_eps0.01			$(BASE) $(META_SELECTOR) --tsetlin_epsilon=0.01
 
 # =========================================================================
 # Warmup / Annealing (default: epsilon_init=0.05, warmup_invocations=100K)
 #   Longer warmup with higher initial exploration
 # =========================================================================
 tsetlin_warmup_ext			$(BASE) $(TSETLIN) --tsetlin_epsilon_init=0.1 --tsetlin_warmup_invocations=200000
+meta_selector_warmup_ext		$(BASE) $(META_SELECTOR) --tsetlin_epsilon_init=0.1 --tsetlin_warmup_invocations=200000
 
 # =========================================================================
 # PT Size Sweep (default: 512)
 #   Smaller PT may cause premature eviction and learning starvation
 # =========================================================================
 tsetlin_pt256				$(BASE) $(TSETLIN) --tsetlin_pt_size=256
+meta_selector_pt256			$(BASE) $(META_SELECTOR) --tsetlin_pt_size=256
 
 # =========================================================================
 # Dynamic Degree Control
@@ -86,12 +101,15 @@ tsetlin_pt256				$(BASE) $(TSETLIN) --tsetlin_pt_size=256
 
 # Disable dynamic degree → fixed degree=2
 tsetlin_nodyn				$(BASE) $(TSETLIN) --tsetlin_enable_dyn_degree=0 --tsetlin_pref_degree=2
+meta_selector_nodyn			$(BASE) $(META_SELECTOR) --tsetlin_enable_dyn_degree=0 --tsetlin_pref_degree=2
 
 # Aggressive: lower thresholds → more multi-degree prefetching
 tsetlin_dyn_agg				$(BASE) $(TSETLIN) --tsetlin_dyn_deg_thresh=1,3,5 --tsetlin_dyn_deg_values=2,4,6,8 --tsetlin_dyn_deg_thresh_hbw=1,3,5 --tsetlin_dyn_deg_values_hbw=1,2,3,4
+meta_selector_dyn_agg			$(BASE) $(META_SELECTOR) --tsetlin_dyn_deg_thresh=1,3,5 --tsetlin_dyn_deg_values=2,4,6,8 --tsetlin_dyn_deg_thresh_hbw=1,3,5 --tsetlin_dyn_deg_values_hbw=1,2,3,4
 
 # Conservative: higher thresholds → less multi-degree prefetching
 tsetlin_dyn_cons				$(BASE) $(TSETLIN) --tsetlin_dyn_deg_thresh=4,8,12 --tsetlin_dyn_deg_values=1,2,2,3 --tsetlin_dyn_deg_thresh_hbw=4,8,12 --tsetlin_dyn_deg_values_hbw=1,1,2,2
+meta_selector_dyn_cons			$(BASE) $(META_SELECTOR) --tsetlin_dyn_deg_thresh=4,8,12 --tsetlin_dyn_deg_values=1,2,2,3 --tsetlin_dyn_deg_thresh_hbw=4,8,12 --tsetlin_dyn_deg_values_hbw=1,1,2,2
 
 # =========================================================================
 # Combined Tests (exploring interactions)
@@ -99,12 +117,15 @@ tsetlin_dyn_cons				$(BASE) $(TSETLIN) --tsetlin_dyn_deg_thresh=4,8,12 --tsetlin
 
 # Small + fast: half clauses, low precision, low threshold → fast learning
 tsetlin_small_fast			$(BASE) $(TSETLIN) --tsetlin_num_clauses=64 --tsetlin_s=1.5 --tsetlin_threshold=4
+meta_selector_small_fast		$(BASE) $(META_SELECTOR) --tsetlin_num_clauses=64 --tsetlin_s=1.5 --tsetlin_threshold=4
 
 # Large + precise: double clauses, high precision, high threshold → slow & accurate
 tsetlin_large_precise			$(BASE) $(TSETLIN) --tsetlin_num_clauses=256 --tsetlin_s=10.0 --tsetlin_threshold=16
+meta_selector_large_precise		$(BASE) $(META_SELECTOR) --tsetlin_num_clauses=256 --tsetlin_s=10.0 --tsetlin_threshold=16
 
 # High exploration combo: high epsilon + extended warmup
 tsetlin_explore_hi			$(BASE) $(TSETLIN) --tsetlin_epsilon=0.01 --tsetlin_epsilon_init=0.1 --tsetlin_warmup_invocations=200000
+meta_selector_explore_hi		$(BASE) $(META_SELECTOR) --tsetlin_epsilon=0.01 --tsetlin_epsilon_init=0.1 --tsetlin_warmup_invocations=200000
 
 # =========================================================================
 # Feature Engineering Sweep (P1.2 + P1.3)
@@ -113,17 +134,23 @@ tsetlin_explore_hi			$(BASE) $(TSETLIN) --tsetlin_epsilon=0.01 --tsetlin_epsilon
 # Delta Signature features: disable (0) vs fewer bits (8)
 #   Default: 12 bits of SPP-style shift-XOR delta signature
 tsetlin_dsig0				$(BASE) $(TSETLIN) --tsetlin_delta_sig_bits=0
+meta_selector_dsig0			$(BASE) $(META_SELECTOR) --tsetlin_delta_sig_bits=0
 tsetlin_dsig8				$(BASE) $(TSETLIN) --tsetlin_delta_sig_bits=8
+meta_selector_dsig8			$(BASE) $(META_SELECTOR) --tsetlin_delta_sig_bits=8
 
 # PC×Page interaction bits: more (default: 4)
 tsetlin_inter8				$(BASE) $(TSETLIN) --tsetlin_interaction_bits=8
+meta_selector_inter8			$(BASE) $(META_SELECTOR) --tsetlin_interaction_bits=8
 
 # BW thermometer bits: finer encoding (default: 2)
 tsetlin_bw4				$(BASE) $(TSETLIN) --tsetlin_temp_bw_bits=4
+meta_selector_bw4			$(BASE) $(META_SELECTOR) --tsetlin_temp_bw_bits=4
 
 # Delta thermometer bits: fewer vs finer (default: 12)
 tsetlin_td8				$(BASE) $(TSETLIN) --tsetlin_temp_delta_bits=8
+meta_selector_td8			$(BASE) $(META_SELECTOR) --tsetlin_temp_delta_bits=8
 tsetlin_td16				$(BASE) $(TSETLIN) --tsetlin_temp_delta_bits=16
+meta_selector_td16			$(BASE) $(META_SELECTOR) --tsetlin_temp_delta_bits=16
 
 # =========================================================================
 # Advanced Features Sweep (P1.4) — Access Frequency & Confidence Feedback
@@ -135,9 +162,12 @@ tsetlin_td16				$(BASE) $(TSETLIN) --tsetlin_temp_delta_bits=16
 
 # Enable access frequency thermometer (4 bits) → second-order: hot pages
 tsetlin_freq4				$(BASE) $(TSETLIN) --tsetlin_freq_bits=4 --tsetlin_num_features=84
+meta_selector_freq4			$(BASE) $(META_SELECTOR) --tsetlin_freq_bits=4 --tsetlin_num_features=84
 
 # Enable confidence feedback thermometer (4 bits) → second-order: meta-cognition
 tsetlin_conf4				$(BASE) $(TSETLIN) --tsetlin_conf_bits=4 --tsetlin_num_features=84
+meta_selector_conf4			$(BASE) $(META_SELECTOR) --tsetlin_conf_bits=4 --tsetlin_num_features=84
 
 # Enable both freq + conf (full second-order reasoning)
 tsetlin_freq4_conf4			$(BASE) $(TSETLIN) --tsetlin_freq_bits=4 --tsetlin_conf_bits=4 --tsetlin_num_features=88
+meta_selector_freq4_conf4		$(BASE) $(META_SELECTOR) --tsetlin_freq_bits=4 --tsetlin_conf_bits=4 --tsetlin_num_features=88

@@ -20,7 +20,7 @@ void StridePrefetcher::init_stats()
 
 StridePrefetcher::StridePrefetcher(string type) : Prefetcher(type)
 {
-
+   m_last_confidence = 0.0f;
 }
 
 StridePrefetcher::~StridePrefetcher()
@@ -62,6 +62,7 @@ void StridePrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t 
       tracker->last_stride = 0;
       trackers.push_front(tracker);
       stats.tracker.insert++;
+      m_last_confidence = 0.0f;  // new tracker → no confidence yet
       return;
    }
 
@@ -83,6 +84,7 @@ void StridePrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t 
    if(stride == 0)
    {
       stats.stride.zero++;
+      m_last_confidence = 0.0f;  // zero stride → no confidence
       return;
    }
 
@@ -91,6 +93,21 @@ void StridePrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t 
       stats.pref.stride_match++;
       uint32_t count = generate_prefetch(address, stride, pref_addr);
       stats.pref.generated += count;
+      // P3: Streak-based confidence — ramps from 0→1 over STRIDE_CONF_STREAK_MAX
+      // consecutive matches.  Prevents EMA asymmetry where a single match inflates
+      // norm_conf to 100×, and a single mismatch immediately drops to 0.
+      tracker->consecutive_matches++;
+      if (tracker->consecutive_matches > STRIDE_CONF_STREAK_MAX) {
+          tracker->consecutive_matches = STRIDE_CONF_STREAK_MAX;
+      }
+      m_last_confidence = (float)tracker->consecutive_matches
+                        / (float)STRIDE_CONF_STREAK_MAX;
+   }
+   else
+   {
+      // Stride changed: reset streak and confidence.
+      tracker->consecutive_matches = 0;
+      m_last_confidence = 0.0f;
    }
 
    /* update tracker */

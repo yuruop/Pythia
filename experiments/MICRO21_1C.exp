@@ -22,6 +22,7 @@ SPP_PPF_DEV = --l2c_prefetcher_types=spp_ppf_dev --config=$(PYTHIA_HOME)/config/
 PYTHIA = --l2c_prefetcher_types=scooby --config=$(PYTHIA_HOME)/config/pythia.ini
 LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
 TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
+META_SELECTOR = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector.ini
 
 # experiments for Figure 10(a) and Figure 8
 nopref						$(BASE) $(NOPREF)
@@ -31,6 +32,7 @@ mlop						$(BASE) $(MLOP)
 pythia						$(BASE) $(PYTHIA)
 linucb						$(BASE) $(LINUCB)
 tsetlin						$(BASE) $(TSETLIN)
+meta_selector					$(BASE) $(META_SELECTOR)
 
 
 # Experiments for Figure 9(b)
@@ -41,6 +43,7 @@ mlop_MTPS150					$(BASE) $(MLOP) --dram_io_freq=150
 pythia_MTPS150 					$(BASE) $(PYTHIA) --dram_io_freq=150
 linucb_MTPS150					$(BASE) $(LINUCB) --dram_io_freq=150
 tsetlin_MTPS150					$(BASE) $(TSETLIN) --dram_io_freq=150
+meta_selector_MTPS150				$(BASE) $(META_SELECTOR) --dram_io_freq=150
 
 nopref_MTPS300					$(BASE) $(NOPREF) --dram_io_freq=300
 spp_MTPS300					$(BASE) $(SPP_DEV2) --dram_io_freq=300
@@ -49,6 +52,7 @@ mlop_MTPS300					$(BASE) $(MLOP) --dram_io_freq=300
 pythia_MTPS300 					$(BASE) $(PYTHIA) --dram_io_freq=300
 linucb_MTPS300					$(BASE) $(LINUCB) --dram_io_freq=300
 tsetlin_MTPS300					$(BASE) $(TSETLIN) --dram_io_freq=300
+meta_selector_MTPS300				$(BASE) $(META_SELECTOR) --dram_io_freq=300
 
 nopref_MTPS600					$(BASE) $(NOPREF) --dram_io_freq=600
 spp_MTPS600					$(BASE) $(SPP_DEV2) --dram_io_freq=600
@@ -57,6 +61,7 @@ mlop_MTPS600					$(BASE) $(MLOP) --dram_io_freq=600
 pythia_MTPS600 					$(BASE) $(PYTHIA) --dram_io_freq=600
 linucb_MTPS600					$(BASE) $(LINUCB) --dram_io_freq=600
 tsetlin_MTPS600					$(BASE) $(TSETLIN) --dram_io_freq=600
+meta_selector_MTPS600				$(BASE) $(META_SELECTOR) --dram_io_freq=600
 
 nopref_MTPS1200					$(BASE) $(NOPREF) --dram_io_freq=1200
 spp_MTPS1200					$(BASE) $(SPP_DEV2) --dram_io_freq=1200
@@ -65,6 +70,7 @@ mlop_MTPS1200					$(BASE) $(MLOP) --dram_io_freq=1200
 pythia_MTPS1200 				$(BASE) $(PYTHIA) --dram_io_freq=1200
 linucb_MTPS1200				$(BASE) $(LINUCB) --dram_io_freq=1200
 tsetlin_MTPS1200					$(BASE) $(TSETLIN) --dram_io_freq=1200
+meta_selector_MTPS1200				$(BASE) $(META_SELECTOR) --dram_io_freq=1200
 
 nopref_MTPS4800					$(BASE) $(NOPREF) --dram_io_freq=4800
 spp_MTPS4800					$(BASE) $(SPP_DEV2) --dram_io_freq=4800
@@ -73,6 +79,7 @@ mlop_MTPS4800					$(BASE) $(MLOP) --dram_io_freq=4800
 pythia_MTPS4800 				$(BASE) $(PYTHIA) --dram_io_freq=4800
 linucb_MTPS4800				$(BASE) $(LINUCB) --dram_io_freq=4800
 tsetlin_MTPS4800					$(BASE) $(TSETLIN) --dram_io_freq=4800
+meta_selector_MTPS4800				$(BASE) $(META_SELECTOR) --dram_io_freq=4800
 
 nopref_MTPS9600					$(BASE) $(NOPREF) --dram_io_freq=9600
 spp_MTPS9600					$(BASE) $(SPP_DEV2) --dram_io_freq=9600
@@ -81,3 +88,4 @@ mlop_MTPS9600					$(BASE) $(MLOP) --dram_io_freq=9600
 pythia_MTPS9600 				$(BASE) $(PYTHIA) --dram_io_freq=9600
 linucb_MTPS9600				$(BASE) $(LINUCB) --dram_io_freq=9600
 tsetlin_MTPS9600					$(BASE) $(TSETLIN) --dram_io_freq=9600
+meta_selector_MTPS9600				$(BASE) $(META_SELECTOR) --dram_io_freq=9600

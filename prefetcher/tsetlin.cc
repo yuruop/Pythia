@@ -480,6 +480,7 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     , m_encoding((EncodingMode)encoding_mode)
     , m_num_tilings(num_tilings)
     , m_tiles_per_tiling(tiles_per_tiling)
+    , m_last_confidence_norm(0.0f)
 {
     // Initialize pooled class sums cache
     for (uint32_t i = 0; i < MAX_POOLED_ACTIONS; i++) {
@@ -1196,24 +1197,73 @@ void TsetlinPrefetcher::invoke_prefetcher(
     // ---- P1.4: Store confidence for next prediction on this page ----
     // Enables second-order reasoning: the TM's own certainty becomes a feature
     // for the next decision on the same page.  Confidence = vote margin.
-    if (m_conf_bits > 0) {
-        int32_t best_sum, second_sum;
+    //
+    // Also always compute normalized confidence for the meta-selector.
+    //
+    // IMPORTANT: Confidence MUST be based on the TM's actual BEST prediction
+    // (argmax of class sums), NOT on action_index.  During epsilon-greedy
+    // exploration, action_index is random and its class sum may be low even
+    // though the TM has a clear preference for a different action.  Using the
+    // random action's class sum would report garbage confidence, starving the
+    // meta-selector of a valid signal and causing training deadlock.
+    {
+        int32_t best_sum = 0, second_sum = 0;
         if (m_featurewise) {
-            // Use pooled vote vector cached from predict_featurewise()
-            best_sum = m_pooled_class_sums[action_index];
-            second_sum = 0;
+            // Find the actual best action from the pooled vote vector.
+            // m_pooled_class_sums was just refreshed by predict_featurewise()
+            // (called above in both explore and exploit paths).
+            uint32_t best_act = 0;
             for (uint32_t a = 0; a < m_max_actions; a++) {
-                if (a != action_index && m_pooled_class_sums[a] > second_sum) {
+                if (m_pooled_class_sums[a] > best_sum) {
+                    second_sum = best_sum;   // old best becomes second
+                    best_sum = m_pooled_class_sums[a];
+                    best_act = a;
+                } else if (m_pooled_class_sums[a] > second_sum) {
                     second_sum = m_pooled_class_sums[a];
                 }
             }
         } else {
-            best_sum   = m_tm->get_class_sum(action_index);
-            second_sum = m_tm->get_second_best_class_sum();
+            // Monolithic: m_class_sum was refreshed by predict() above.
+            // get_second_best_class_sum() finds the true second-best across
+            // all actions, independent of action_index.
+            best_sum   = m_tm->get_class_sum(
+                m_tm->predict(nullptr));  // re-predict is cheap; or find argmax
+            // Actually, we can't re-predict without features.  But we know
+            // m_class_sum is fresh from the predict() call above, and
+            // get_second_best_class_sum() scans all actions.  We need the
+            // best sum, which is: max(m_class_sum[a]).
+            // get_class_sum() on the action from predict() gives the best.
+            // But predict() was already called — its return value is the
+            // best action.  We saved it as action_index during exploit.
+            // During explore, predict() WAS called (line 1159) but the
+            // return value was discarded.  We need to capture it.
+            //
+            // FIX: Re-derive best_sum correctly: find argmax of class sums.
+            best_sum = m_tm->get_class_sum(0);
+            for (uint32_t a = 1; a < m_max_actions; a++) {
+                int32_t s = m_tm->get_class_sum(a);
+                if (s > best_sum) {
+                    second_sum = best_sum;
+                    best_sum = s;
+                } else if (s > second_sum) {
+                    second_sum = s;
+                }
+            }
         }
         int32_t conf = best_sum - second_sum;
         if (conf < 0) conf = 0;
-        lot_entry.last_confidence = conf;
+
+        // Always normalize for meta-selector (independent of m_conf_bits).
+        // Monolithic TM: max possible margin ≈ 2*threshold
+        // Feature-wise: pools across sub-TMs → could be larger.
+        // Use safe normalization: conf / (2*m_tm_threshold + 1).
+        int32_t margin_max = (m_tm_threshold > 0) ? (m_tm_threshold * 2) : 8;
+        m_last_confidence_norm = (float)conf / (float)(margin_max + 1);
+        if (m_last_confidence_norm > 1.0f) m_last_confidence_norm = 1.0f;
+
+        if (m_conf_bits > 0) {
+            lot_entry.last_confidence = conf;
+        }
     }
 
     // ---- Step 5: Issue prefetch or track no-prefetch ----

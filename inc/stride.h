@@ -13,12 +13,14 @@ class Tracker
     uint64_t pc;
     uint64_t last_cl_addr;
     int64_t last_stride;
+    uint32_t consecutive_matches;  // P3: streak for confidence ramp-up
 
     Tracker()
     {
         pc = 0;
         last_cl_addr = 0;
         last_stride = 0;
+        consecutive_matches = 0;
     };
 };
 
@@ -53,6 +55,12 @@ private:
 
    } stats;
 
+   // Confidence for meta-selector: streak-based, ramps from 0→1 over 8
+   // consecutive matches.  Prevents EMA asymmetry: a single match no longer
+   // inflates norm_conf to 100×, and a single mismatch resets to 0.
+   static constexpr uint32_t STRIDE_CONF_STREAK_MAX = 8;
+   float m_last_confidence;
+
 private:
    void init_knobs();
    void init_stats();
@@ -64,6 +72,11 @@ public:
    void invoke_prefetcher(uint64_t pc, uint64_t address, uint8_t cache_hit, uint8_t type, vector<uint64_t> &pref_addr);
    void dump_stats();
    void print_config();
+
+   // Query the confidence of the last prediction.
+   // Returns 1.0 if the last invocation confirmed a stride match (high confidence),
+   // 0.0 if no stride was detected or stride didn't match.
+   float get_last_confidence() const { return m_last_confidence; }
 };
 
 

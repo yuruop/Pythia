@@ -19,6 +19,7 @@ BINGO = --l2c_prefetcher_types=bingo --config=$(PYTHIA_HOME)/config/bingo.ini
 PYTHIA = --l2c_prefetcher_types=scooby --config=$(PYTHIA_HOME)/config/pythia.ini
 LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
 TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
+META_SELECTOR = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector.ini
 
 # Core experiments: baseline prefetcher comparison (four-core)
 nopref						$(BASE) $(NOPREF)
@@ -28,3 +29,4 @@ mlop						$(BASE) $(MLOP)
 pythia						$(BASE) $(PYTHIA)
 linucb						$(BASE) $(LINUCB)
 tsetlin						$(BASE) $(TSETLIN)
+meta_selector					$(BASE) $(META_SELECTOR)

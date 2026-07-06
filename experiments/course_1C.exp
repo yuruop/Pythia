@@ -21,6 +21,7 @@ SPP_PPF_DEV = --l2c_prefetcher_types=spp_ppf_dev --config=$(PYTHIA_HOME)/config/
 PYTHIA = --l2c_prefetcher_types=scooby --config=$(PYTHIA_HOME)/config/pythia.ini
 LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
 TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
+META_SELECTOR = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector.ini
 
 # Core experiments: baseline prefetcher comparison (single-core)
 nopref						$(BASE) $(NOPREF)
@@ -30,6 +31,7 @@ mlop						$(BASE) $(MLOP)
 pythia						$(BASE) $(PYTHIA)
 linucb						$(BASE) $(LINUCB)
 tsetlin						$(BASE) $(TSETLIN)
+meta_selector					$(BASE) $(META_SELECTOR)
 
 
 # DRAM bandwidth sensitivity (reduced: only 2 representative points)
@@ -40,6 +42,7 @@ mlop_MTPS600					$(BASE) $(MLOP) --dram_io_freq=600
 pythia_MTPS600 					$(BASE) $(PYTHIA) --dram_io_freq=600
 linucb_MTPS600					$(BASE) $(LINUCB) --dram_io_freq=600
 tsetlin_MTPS600					$(BASE) $(TSETLIN) --dram_io_freq=600
+meta_selector_MTPS600				$(BASE) $(META_SELECTOR) --dram_io_freq=600
 
 nopref_MTPS4800					$(BASE) $(NOPREF) --dram_io_freq=4800
 spp_MTPS4800					$(BASE) $(SPP_DEV2) --dram_io_freq=4800
@@ -48,3 +51,4 @@ mlop_MTPS4800					$(BASE) $(MLOP) --dram_io_freq=4800
 pythia_MTPS4800 				$(BASE) $(PYTHIA) --dram_io_freq=4800
 linucb_MTPS4800					$(BASE) $(LINUCB) --dram_io_freq=4800
 tsetlin_MTPS4800				$(BASE) $(TSETLIN) --dram_io_freq=4800
+meta_selector_MTPS4800				$(BASE) $(META_SELECTOR) --dram_io_freq=4800

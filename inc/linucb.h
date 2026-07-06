@@ -255,6 +255,11 @@ private:
     // ---------- Exploration ----------
     float    m_epsilon;
 
+    // ---------- Confidence for meta-selector ----------
+    // Cached UCB best-score from the last prediction.
+    // Updated on every invoke_prefetcher call, queried by MetaSelectorPrefetcher.
+    float m_last_confidence;
+
     // ---------- RNG ----------
     // Must be declared BEFORE m_reward_* members because the constructor
     // initializer list initializes RNG objects first.
@@ -414,6 +419,11 @@ public:
 
     // ---- Accessors ----
     const char* get_reward_type_name(int32_t type) const;
+
+    // Query the confidence of the last prediction.
+    // Returns the UCB score of the best action from the last prediction (cached).
+    // Used by MetaSelectorPrefetcher to compare confidence across prefetchers.
+    float get_last_confidence() const { return m_last_confidence; }
 
 private:
     // Generate continuous features from program state (P1.5: +stride_streak)

@@ -319,6 +319,11 @@ private:
     std::bernoulli_distribution           m_explore;
     std::uniform_int_distribution<int32_t> m_action_gen;
 
+    // ---------- Confidence for meta-selector ----------
+    // Normalized vote margin from the last prediction: margin / (margin_max + epsilon).
+    // Updated on every invoke_prefetcher call, queried by MetaSelectorPrefetcher.
+    float m_last_confidence_norm;
+
     // ---------- Statistics ----------
     struct {
         struct {
@@ -419,6 +424,11 @@ public:
 
     // ---- Accessors ----
     const char* get_reward_type_name(int32_t type) const;
+
+    // Query the confidence of the last prediction (vote margin).
+    // Returns the normalized vote margin (best - second_best) as a float.
+    // Used by MetaSelectorPrefetcher to compare confidence across prefetchers.
+    float get_last_confidence() const { return m_last_confidence_norm; }
 
 private:
     // Generate binary features from program state (P1.4: +freq/conf)
