@@ -243,18 +243,43 @@ void MetaSelectorPrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address,
         m_buffers[i].clear();
     }
 
-    // ---- Step 1: Run all three sub-prefetchers ----
-    // Each updates its internal state (PT, learning, tracker tables) and
-    // fills its own prediction buffer.
+    // ---- Step 1: Snapshot PT sizes before invoke ----
+    // Tsetlin and LinUCB use Prefetch Trackers (PT) for delayed reward.
+    // Stride is PT-less — no snapshot needed.
+    uint32_t ts_pt_before = m_tsetlin->get_pt_size();
+    uint32_t cb_pt_before = m_linucb->get_pt_size();
+
+    // ---- Step 2: Run all three sub-prefetchers ----
+    // Each updates its internal state (tracking tables, feature generation,
+    // model prediction) and fills its own prediction buffer.
+    // IMPORTANT: Each also creates PT entries for its predictions — but only
+    // the winner's predictions will actually be issued.  Loser PT entries
+    // must be discarded (Step 4) to prevent systematic negative feedback:
+    // an unissued prediction can never be filled, so it should never exist
+    // in the PT.
     m_tsetlin->invoke_prefetcher(pc, address, cache_hit, type, m_buffers[SP_TSETLIN]);
     m_linucb->invoke_prefetcher(pc, address, cache_hit, type, m_buffers[SP_LINUCB]);
     m_stride->invoke_prefetcher(pc, address, cache_hit, type, m_buffers[SP_STRIDE]);
 
-    // ---- Step 2: Compute confidence and select the winner ----
+    // ---- Step 3: Compute confidence and select the winner ----
     int32_t winner = select_best_prefetcher();
     m_selected_count[winner]++;
 
-    // ---- Step 3: Output winner's predictions ----
+    // ---- Step 4: Discard loser PT entries ----
+    // Losers' predictions were never issued → their PT entries would never
+    // be filled → would all generate negative (incorrect) feedback on eviction.
+    // Popping them back to pre-invoke size removes exactly the entries created
+    // by this invocation, leaving older entries (from previous wins) intact.
+    //
+    // Stride has no PT — no action needed.
+    if (winner != SP_TSETLIN) {
+        m_tsetlin->pop_pt_entries(ts_pt_before);
+    }
+    if (winner != SP_LINUCB) {
+        m_linucb->pop_pt_entries(cb_pt_before);
+    }
+
+    // ---- Step 5: Output winner's predictions ----
     std::vector<uint64_t>& winner_buf = m_buffers[winner];
     if (!winner_buf.empty()) {
         pref_addr.insert(pref_addr.end(), winner_buf.begin(), winner_buf.end());
@@ -278,9 +303,9 @@ void MetaSelectorPrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address,
 
 void MetaSelectorPrefetcher::register_fill(uint64_t address)
 {
-    // Forward to all sub-prefetchers. Each handles its own PT entries —
-    // entries from non-winning sub-prefetchers will time out as "unfilled",
-    // providing a mild corrective signal.
+    // Forward to all sub-prefetchers.  Loser PT entries were already discarded
+    // in invoke_prefetcher (Step 4), so this fill only matches the winner's
+    // entries — exactly the ones that were actually issued.
     m_tsetlin->register_fill(address);
     m_linucb->register_fill(address);
     // Stride prefetcher doesn't have register_fill (PT-less design)

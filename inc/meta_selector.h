@@ -12,13 +12,21 @@
  * The meta-selector computes a confidence score for each and selects the most
  * confident prefetcher's predictions for actual issue.
  *
+ * PT management: After all three invoke_prefetcher() (which creates PT entries),
+ * the losers' newly-created PT entries are immediately discarded.  Only the
+ * winner's PT entries survive — because only the winner's predictions were
+ * actually issued.  This prevents systematic negative feedback: an unissued
+ * prediction can never be filled, so it should never exist in the PT.
+ *
  * Confidence metrics:
  *   - Tsetlin: vote margin (best_class_sum - second_best_class_sum) normalized
  *   - LinUCB:  |expected_reward| of the best action, normalized
- *   - Stride:  binary (1.0 if stride matched, 0.0 if not)
+ *   - Stride:  streak-based (0→1 ramp over 8 consecutive matches)
  *
  * Selection: Each confidence is EMA-normalized (self-calibrating), then the max
  * is chosen.  Tie-breaking prefers Stride > Tsetlin > LinUCB.
+ * Meta-level epsilon-greedy (5%) ensures each prefetcher gets occasional
+ * training opportunities.
  *
  * All register_fill / register_prefetch_hit / broadcast events are forwarded
  * to all three sub-prefetchers so they continue learning regardless of which

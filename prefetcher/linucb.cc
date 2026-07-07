@@ -1628,6 +1628,21 @@ const char* ContextualBanditPrefetcher::get_reward_type_name(int32_t type) const
 }
 
 /* -------------------------------------------------------------------------
+ * pop_pt_entries(): Remove recently-added PT entries from the back until
+ * size == target_size.  Used by MetaSelectorPrefetcher to discard loser
+ * PT entries — their predictions were never issued, so they should not
+ * accumulate negative (unfilled) feedback.
+ * ------------------------------------------------------------------------- */
+void ContextualBanditPrefetcher::pop_pt_entries(uint32_t target_size)
+{
+    while (m_pt.size() > target_size) {
+        CBPrefetchTrackerEntry* entry = m_pt.back();
+        delete entry;
+        m_pt.pop_back();
+    }
+}
+
+/* -------------------------------------------------------------------------
  * print_config(): Output all configuration parameters
  * ------------------------------------------------------------------------- */
 void ContextualBanditPrefetcher::print_config() {

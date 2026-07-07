@@ -1226,19 +1226,9 @@ void TsetlinPrefetcher::invoke_prefetcher(
             // Monolithic: m_class_sum was refreshed by predict() above.
             // get_second_best_class_sum() finds the true second-best across
             // all actions, independent of action_index.
-            best_sum   = m_tm->get_class_sum(
-                m_tm->predict(nullptr));  // re-predict is cheap; or find argmax
-            // Actually, we can't re-predict without features.  But we know
-            // m_class_sum is fresh from the predict() call above, and
-            // get_second_best_class_sum() scans all actions.  We need the
-            // best sum, which is: max(m_class_sum[a]).
-            // get_class_sum() on the action from predict() gives the best.
-            // But predict() was already called — its return value is the
-            // best action.  We saved it as action_index during exploit.
-            // During explore, predict() WAS called (line 1159) but the
-            // return value was discarded.  We need to capture it.
             //
-            // FIX: Re-derive best_sum correctly: find argmax of class sums.
+            // Find argmax of class sums (m_class_sum was refreshed by predict()
+            // called above in both explore and exploit paths).
             best_sum = m_tm->get_class_sum(0);
             for (uint32_t a = 1; a < m_max_actions; a++) {
                 int32_t s = m_tm->get_class_sum(a);
@@ -1711,6 +1701,21 @@ const char* TsetlinPrefetcher::get_reward_type_name(int32_t type) const {
         case REWARD_INCORRECT: return "incorrect";
         case REWARD_NONE:      return "none";
         default:               return "unknown";
+    }
+}
+
+/* -------------------------------------------------------------------------
+ * pop_pt_entries(): Remove recently-added PT entries from the back until
+ * size == target_size.  Used by MetaSelectorPrefetcher to discard loser
+ * PT entries — their predictions were never issued, so they should not
+ * accumulate negative (unfilled) feedback.
+ * ------------------------------------------------------------------------- */
+void TsetlinPrefetcher::pop_pt_entries(uint32_t target_size)
+{
+    while (m_pt.size() > target_size) {
+        TMPrefetchTrackerEntry* entry = m_pt.back();
+        delete entry;
+        m_pt.pop_back();
     }
 }
 

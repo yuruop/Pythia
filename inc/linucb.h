@@ -425,6 +425,13 @@ public:
     // Used by MetaSelectorPrefetcher to compare confidence across prefetchers.
     float get_last_confidence() const { return m_last_confidence; }
 
+    // ---- PT control for meta-selector (P3) ----
+    // Returns current number of entries in the prefetch tracker.
+    uint32_t get_pt_size() const { return (uint32_t)m_pt.size(); }
+    // Removes recently-added PT entries from the back until size == target_size.
+    // Used by MetaSelectorPrefetcher to discard loser PT entries.
+    void pop_pt_entries(uint32_t target_size);
+
 private:
     // Generate continuous features from program state (P1.5: +stride_streak)
     void generate_features(uint64_t pc, uint64_t page, uint32_t offset,
