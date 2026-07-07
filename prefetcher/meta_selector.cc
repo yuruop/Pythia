@@ -1,11 +1,11 @@
 /*
- * Meta-Selector Prefetcher Implementation (v3 — sticky greedy)
+ * Meta-Selector Prefetcher Implementation (v4 — sticky greedy + epsilon annealing)
  *
  * Runs Tsetlin, LinUCB, and Stride prefetchers simultaneously.
  * Uses sticky greedy selection on actual prefetch accuracy (PT hit rate).
  * Once a winner is chosen at an accuracy-sample boundary, it "sticks" for
- * the entire sampling window.  Only meta-exploration (5%) can override it
- * within a window.  This prevents the ping-pong alternation that plagued UCB.
+ * the entire sampling window.  Epsilon annealing (50% → 5%) gives both
+ * prefetchers balanced training early on, preventing "rich-get-richer."
  *
  * Improvements over v1 (confidence-only):
  *   P4: Outcome-based accuracy tracking with sticky greedy selection
@@ -16,7 +16,10 @@
  * v3 fixes over v2 (UCB):
  *   - Replaced per-invocation UCB with per-window sticky greedy selection
  *   - UCB exploration bonus caused ping-pong alternation, destroying accuracy
- *   - Hysteresis margin prevents flip-flopping at sample boundaries
+ *
+ * v4 fixes over v3 (rich-get-richer):
+ *   - Epsilon annealing: 50% → 5% exploration over 100K invocations
+ *   - Hysteresis margin reduced: 10% → 5% (1.1 → 1.05)
  */
 
 #include "meta_selector.h"
@@ -67,7 +70,9 @@ MetaSelectorPrefetcher::MetaSelectorPrefetcher(
         bool linucb_history_features,
         // Meta-selector-specific
         float meta_conf_alpha,
-        float meta_epsilon,
+        float meta_epsilon_init,
+        float meta_epsilon_final,
+        uint64_t meta_epsilon_anneal_invocations,
         float meta_accuracy_alpha,
         float meta_hysteresis_margin,
         uint32_t meta_sample_interval,
@@ -87,7 +92,9 @@ MetaSelectorPrefetcher::MetaSelectorPrefetcher(
     , m_last_pc(0)
     , m_total_invocations(0)
     , m_rng(seed + 777)
-    , m_meta_epsilon(meta_epsilon)
+    , m_epsilon_init(meta_epsilon_init)
+    , m_epsilon_final(meta_epsilon_final)
+    , m_epsilon_anneal_invocations(meta_epsilon_anneal_invocations)
     , m_bw_level(0)
 {
     // Initialize EMA trackers
@@ -262,7 +269,19 @@ void MetaSelectorPrefetcher::update_accuracy()
 }
 
 /* ==========================================================================
- * Core Selection Logic (sticky greedy with meta-exploration)
+ * Epsilon Annealing
+ * ========================================================================== */
+
+float MetaSelectorPrefetcher::current_epsilon() const
+{
+    if (m_epsilon_anneal_invocations == 0) return m_epsilon_final;
+    float progress = (float)m_total_invocations / (float)m_epsilon_anneal_invocations;
+    if (progress >= 1.0f) return m_epsilon_final;
+    return m_epsilon_init - (m_epsilon_init - m_epsilon_final) * progress;
+}
+
+/* ==========================================================================
+ * Core Selection Logic (sticky greedy with annealed meta-exploration)
  * ========================================================================== */
 
 int32_t MetaSelectorPrefetcher::select_best_prefetcher()
@@ -294,11 +313,11 @@ int32_t MetaSelectorPrefetcher::select_best_prefetcher()
 
     // Both ML prefetchers have predictions.
 
-    // ---- Meta-level exploration (5%) ----
-    // This is the ONLY source of within-window selection diversity.
-    // It ensures the non-sticky prefetcher gets occasional training.
+    // ---- Meta-level exploration with epsilon annealing ----
+    // Starts at 50% to give both prefetchers balanced training.
+    // Linearly decays to 5% over the anneal period.
     std::uniform_real_distribution<float> meta_dist(0.0f, 1.0f);
-    if (meta_dist(m_rng) < m_meta_epsilon) {
+    if (meta_dist(m_rng) < current_epsilon()) {
         m_stats.meta_explore++;
         std::uniform_int_distribution<int32_t> pick(0, 1);
         return (pick(m_rng) == 0) ? SP_TSETLIN : SP_LINUCB;
@@ -474,7 +493,10 @@ void MetaSelectorPrefetcher::dump_stats()
     cout << "meta_greedy " << m_stats.meta_greedy << endl;
     cout << "meta_sticky_switches " << m_stats.sticky_switches << endl;
     cout << "meta_hysteresis_margin " << m_hysteresis_margin << endl;
-    cout << "meta_epsilon " << m_meta_epsilon << endl;
+    cout << "meta_epsilon_init " << m_epsilon_init << endl;
+    cout << "meta_epsilon_final " << m_epsilon_final << endl;
+    cout << "meta_epsilon_anneal_invocations " << m_epsilon_anneal_invocations << endl;
+    cout << "meta_epsilon_current " << current_epsilon() << endl;
     cout << endl;
 
     // Dump sub-prefetcher stats
@@ -490,7 +512,9 @@ void MetaSelectorPrefetcher::dump_stats()
 void MetaSelectorPrefetcher::print_config()
 {
     cout << "meta_selector_conf_alpha " << m_conf_alpha << endl;
-    cout << "meta_selector_epsilon " << m_meta_epsilon << endl;
+    cout << "meta_selector_epsilon_init " << m_epsilon_init << endl;
+    cout << "meta_selector_epsilon_final " << m_epsilon_final << endl;
+    cout << "meta_selector_epsilon_anneal_invocations " << m_epsilon_anneal_invocations << endl;
     cout << "meta_selector_accuracy_alpha " << m_accuracy_alpha << endl;
     cout << "meta_selector_hysteresis_margin " << m_hysteresis_margin << endl;
     cout << "meta_selector_sample_interval " << m_sample_interval << endl;

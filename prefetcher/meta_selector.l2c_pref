@@ -25,7 +25,9 @@ using namespace std;
 namespace knob {
     // Meta-selector specific
     extern float    meta_selector_conf_alpha;
-    extern float    meta_selector_epsilon;
+    extern float    meta_selector_epsilon_init;
+    extern float    meta_selector_epsilon_final;
+    extern uint64_t meta_selector_epsilon_anneal_invocations;
     extern uint64_t meta_selector_rng_seed;
     extern float    meta_selector_accuracy_alpha;
     extern float    meta_selector_hysteresis_margin;
@@ -185,7 +187,9 @@ void CACHE::l2c_prefetcher_initialize()
         knob::linucb_history_features,
         // Meta-selector-specific
         knob::meta_selector_conf_alpha,
-        knob::meta_selector_epsilon,
+        knob::meta_selector_epsilon_init,
+        knob::meta_selector_epsilon_final,
+        knob::meta_selector_epsilon_anneal_invocations,
         knob::meta_selector_accuracy_alpha,
         knob::meta_selector_hysteresis_margin,
         knob::meta_selector_sample_interval,

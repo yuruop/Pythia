@@ -116,10 +116,14 @@ private:
     // ---------- RNG for tie-breaking / meta-exploration ----------
     std::mt19937 m_rng;
 
-    // Meta-level exploration: with probability m_meta_epsilon, the sticky
-    // winner is overridden and a random ML prefetcher is selected instead.
-    // This is the ONLY source of selection diversity within a sampling window.
-    float m_meta_epsilon;  // default 0.05 = 5% random selection
+    // Meta-level exploration with epsilon annealing.
+    // Starts high (m_epsilon_init, default 0.50) to give both prefetchers
+    // balanced training early on.  Linearly decays to m_epsilon_final
+    // (default 0.05) over m_epsilon_anneal_invocations.  This prevents the
+    // "rich-get-richer" problem where the sticky winner monopolizes training.
+    float    m_epsilon_init;                 // initial exploration rate (default 0.50)
+    float    m_epsilon_final;               // steady-state exploration rate (default 0.05)
+    uint64_t m_epsilon_anneal_invocations;  // invocations over which epsilon decays
 
     // ---------- BW tracking (forwarded to sub-prefetchers) ----------
     uint8_t m_bw_level;
@@ -174,9 +178,11 @@ public:
         bool linucb_history_features,
         // ---- Meta-selector-specific ----
         float meta_conf_alpha = 0.1f,
-        float meta_epsilon = 0.05f,
+        float meta_epsilon_init = 0.50f,
+        float meta_epsilon_final = 0.05f,
+        uint64_t meta_epsilon_anneal_invocations = 100000,
         float meta_accuracy_alpha = 0.1f,
-        float meta_hysteresis_margin = 1.1f,
+        float meta_hysteresis_margin = 1.05f,
         uint32_t meta_sample_interval = 1000,
         float meta_ctx_blend = 0.5f);
 
@@ -200,6 +206,10 @@ private:
     // Stride is only used as fallback (improvement #2).
     // Meta-exploration randomly overrides the sticky winner.
     int32_t select_best_prefetcher();
+
+    // Compute the current annealed exploration rate.
+    // Linearly decays from m_epsilon_init to m_epsilon_final.
+    float current_epsilon() const;
 
     // Periodically sample PT hit counts and update accuracy EMAs.
     void update_accuracy();

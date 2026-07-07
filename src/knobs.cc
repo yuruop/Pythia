@@ -330,13 +330,15 @@ namespace knob
 	bool     linucb_history_features = false;        // P2.6: path/history features
 
 	/* Meta-Selector Prefetcher knobs */
-	float    meta_selector_conf_alpha = 0.1f;            // P3: faster EMA (was 0.01)
-	float    meta_selector_epsilon = 0.05f;              // meta-exploration rate
+	float    meta_selector_conf_alpha = 0.1f;               // P3: faster EMA
+	float    meta_selector_epsilon_init = 0.50f;            // v4: initial exploration (annealed)
+	float    meta_selector_epsilon_final = 0.05f;           // v4: steady-state exploration
+	uint64_t meta_selector_epsilon_anneal_invocations = 100000; // v4: anneal duration
 	uint64_t meta_selector_rng_seed = 42;
-	float    meta_selector_accuracy_alpha = 0.1f;        // P4: EMA decay for accuracy tracking
-	float    meta_selector_hysteresis_margin = 1.1f;     // v3: min accuracy ratio to switch (1.1 = 10%)
-	uint32_t meta_selector_sample_interval = 1000;       // P4: invocations between accuracy samples
-	float    meta_selector_ctx_blend = 0.5f;             // P5: context-vs-global blend factor
+	float    meta_selector_accuracy_alpha = 0.1f;           // P4: EMA decay for accuracy
+	float    meta_selector_hysteresis_margin = 1.05f;       // v3: min accuracy ratio to switch (5%)
+	uint32_t meta_selector_sample_interval = 1000;           // P4: accuracy sample interval
+	float    meta_selector_ctx_blend = 0.5f;                // P5: context-vs-global blend
 }
 
 void parse_args(int argc, char *argv[])
@@ -1366,13 +1368,15 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "linucb_history_features"))           { knob::linucb_history_features = (bool)atoi(value); }
 
 		/* Meta-Selector Prefetcher knobs */
-		else if (MATCH("", "meta_selector_conf_alpha"))          { knob::meta_selector_conf_alpha = atof(value); }
-		else if (MATCH("", "meta_selector_epsilon"))             { knob::meta_selector_epsilon = atof(value); }
-		else if (MATCH("", "meta_selector_rng_seed"))            { knob::meta_selector_rng_seed = atol(value); }
-		else if (MATCH("", "meta_selector_accuracy_alpha"))      { knob::meta_selector_accuracy_alpha = atof(value); }
-		else if (MATCH("", "meta_selector_hysteresis_margin"))   { knob::meta_selector_hysteresis_margin = atof(value); }
-		else if (MATCH("", "meta_selector_sample_interval"))     { knob::meta_selector_sample_interval = atoi(value); }
-		else if (MATCH("", "meta_selector_ctx_blend"))           { knob::meta_selector_ctx_blend = atof(value); }
+		else if (MATCH("", "meta_selector_conf_alpha"))               { knob::meta_selector_conf_alpha = atof(value); }
+		else if (MATCH("", "meta_selector_epsilon_init"))             { knob::meta_selector_epsilon_init = atof(value); }
+		else if (MATCH("", "meta_selector_epsilon_final"))            { knob::meta_selector_epsilon_final = atof(value); }
+		else if (MATCH("", "meta_selector_epsilon_anneal_invocations")) { knob::meta_selector_epsilon_anneal_invocations = atol(value); }
+		else if (MATCH("", "meta_selector_rng_seed"))                 { knob::meta_selector_rng_seed = atol(value); }
+		else if (MATCH("", "meta_selector_accuracy_alpha"))           { knob::meta_selector_accuracy_alpha = atof(value); }
+		else if (MATCH("", "meta_selector_hysteresis_margin"))        { knob::meta_selector_hysteresis_margin = atof(value); }
+		else if (MATCH("", "meta_selector_sample_interval"))          { knob::meta_selector_sample_interval = atoi(value); }
+		else if (MATCH("", "meta_selector_ctx_blend"))                { knob::meta_selector_ctx_blend = atof(value); }
 
     else
     {
