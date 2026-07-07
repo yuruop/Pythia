@@ -330,13 +330,13 @@ namespace knob
 	bool     linucb_history_features = false;        // P2.6: path/history features
 
 	/* Meta-Selector Prefetcher knobs */
-	float    meta_selector_conf_alpha = 0.1f;       // P3: faster EMA (was 0.01)
-	float    meta_selector_epsilon = 0.02f;          // P4: reduced since UCB adds exploration (was 0.05)
+	float    meta_selector_conf_alpha = 0.1f;            // P3: faster EMA (was 0.01)
+	float    meta_selector_epsilon = 0.05f;              // meta-exploration rate
 	uint64_t meta_selector_rng_seed = 42;
-	float    meta_selector_accuracy_alpha = 0.1f;    // P4: EMA decay for accuracy tracking
-	float    meta_selector_ucb_c = 2.0f;              // P4: UCB exploration constant
-	uint32_t meta_selector_sample_interval = 1000;    // P4: invocations between accuracy samples
-	float    meta_selector_ctx_blend = 0.5f;           // P5: context-vs-global blend factor
+	float    meta_selector_accuracy_alpha = 0.1f;        // P4: EMA decay for accuracy tracking
+	float    meta_selector_hysteresis_margin = 1.1f;     // v3: min accuracy ratio to switch (1.1 = 10%)
+	uint32_t meta_selector_sample_interval = 1000;       // P4: invocations between accuracy samples
+	float    meta_selector_ctx_blend = 0.5f;             // P5: context-vs-global blend factor
 }
 
 void parse_args(int argc, char *argv[])
@@ -1370,7 +1370,7 @@ int parse_knobs(void* user, const char* section, const char* name, const char* v
 		else if (MATCH("", "meta_selector_epsilon"))             { knob::meta_selector_epsilon = atof(value); }
 		else if (MATCH("", "meta_selector_rng_seed"))            { knob::meta_selector_rng_seed = atol(value); }
 		else if (MATCH("", "meta_selector_accuracy_alpha"))      { knob::meta_selector_accuracy_alpha = atof(value); }
-		else if (MATCH("", "meta_selector_ucb_c"))               { knob::meta_selector_ucb_c = atof(value); }
+		else if (MATCH("", "meta_selector_hysteresis_margin"))   { knob::meta_selector_hysteresis_margin = atof(value); }
 		else if (MATCH("", "meta_selector_sample_interval"))     { knob::meta_selector_sample_interval = atoi(value); }
 		else if (MATCH("", "meta_selector_ctx_blend"))           { knob::meta_selector_ctx_blend = atof(value); }
 

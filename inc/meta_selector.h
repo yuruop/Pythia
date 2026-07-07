@@ -9,9 +9,12 @@
  *   3. Stride           — traditional stride detector (fallback only)
  *
  * All three prefetchers update their internal state on every demand access.
- * The meta-selector uses UCB (Upper Confidence Bound) on actual prefetch accuracy
- * (PT hit rate) to select between Tsetlin and LinUCB.  Stride is used only as a
- * fallback when both ML prefetchers produce empty predictions.
+ * The meta-selector uses sticky greedy selection on actual prefetch accuracy
+ * (PT hit rate) to choose between Tsetlin and LinUCB.  Once a winner is chosen
+ * at an accuracy-sample boundary, it "sticks" for the entire sampling window.
+ * This prevents the ping-pong alternation that plagued the UCB-based v2.
+ * Stride is used only as a fallback when both ML prefetchers produce empty
+ * predictions.
  *
  * PT management: After all three invoke_prefetcher() (which creates PT entries),
  * the losers' newly-created PT entries are immediately discarded.  Only the
@@ -87,13 +90,13 @@ private:
     uint32_t m_sample_counter;               // countdown for next accuracy sample
     int32_t  m_last_winner;                  // last selected sub-prefetcher (for fill credit)
 
-    // Accuracy tracking needs a sampled flag because EMA can legitimately be 0.0
-    // after sampling (if no PT hits occurred).  Using m_accuracy_ema == 0.0f to
-    // detect "never sampled" would incorrectly re-trigger cold-start logic.
-    bool     m_has_sampled;                    // true after first update_accuracy() call
-
-    // ---------- UCB selection parameters ----------
-    float    m_ucb_c;                        // UCB exploration constant (default 2.0)
+    // ---------- Sticky greedy selection ----------
+    // At each accuracy sample boundary, the prefetcher with higher accuracy EMA
+    // becomes the sticky winner for the next sampling window.  A hysteresis
+    // margin prevents flip-flopping: the challenger must beat the incumbent
+    // by at least m_hysteresis_margin (default 10%) to trigger a switch.
+    int32_t  m_sticky_winner;                  // current winner for this window
+    float    m_hysteresis_margin;              // min accuracy ratio to switch (default 1.1 = 10%)
 
     // ---------- Context-aware selection (P5) ----------
     static constexpr uint32_t CTX_TABLE_BITS = 8;
@@ -113,10 +116,10 @@ private:
     // ---------- RNG for tie-breaking / meta-exploration ----------
     std::mt19937 m_rng;
 
-    // Meta-level exploration: with probability m_meta_epsilon, a random
-    // ML prefetcher is selected regardless of accuracy.  Reduced from the
-    // confidence-only design since UCB provides its own exploration bonus.
-    float m_meta_epsilon;  // default 0.02 = 2% random selection
+    // Meta-level exploration: with probability m_meta_epsilon, the sticky
+    // winner is overridden and a random ML prefetcher is selected instead.
+    // This is the ONLY source of selection diversity within a sampling window.
+    float m_meta_epsilon;  // default 0.05 = 5% random selection
 
     // ---------- BW tracking (forwarded to sub-prefetchers) ----------
     uint8_t m_bw_level;
@@ -125,9 +128,10 @@ private:
     struct {
         uint64_t all_empty;          // all three produced empty predictions
         uint64_t meta_explore;       // times meta-level exploration was used
-        uint64_t meta_exploit;       // times UCB-based selection was used
+        uint64_t meta_greedy;        // times sticky-greedy selection was used
         uint64_t stride_fallback;    // times stride was selected as fallback (both ML empty)
         uint64_t single_ml;          // times only one ML prefetcher had predictions
+        uint64_t sticky_switches;    // times the sticky winner changed at sample boundary
     } m_stats;
 
 public:
@@ -170,9 +174,9 @@ public:
         bool linucb_history_features,
         // ---- Meta-selector-specific ----
         float meta_conf_alpha = 0.1f,
-        float meta_epsilon = 0.02f,
+        float meta_epsilon = 0.05f,
         float meta_accuracy_alpha = 0.1f,
-        float meta_ucb_c = 2.0f,
+        float meta_hysteresis_margin = 1.1f,
         uint32_t meta_sample_interval = 1000,
         float meta_ctx_blend = 0.5f);
 
@@ -192,9 +196,10 @@ public:
     void update_acc(uint32_t acc_level);
 
 private:
-    // Select the best sub-prefetcher based on UCB accuracy + context blending.
+    // Return the current sticky winner (set at accuracy sample boundaries).
     // Stride is only used as fallback (improvement #2).
-    int32_t select_best_prefetcher(uint64_t pc);
+    // Meta-exploration randomly overrides the sticky winner.
+    int32_t select_best_prefetcher();
 
     // Periodically sample PT hit counts and update accuracy EMAs.
     void update_accuracy();
