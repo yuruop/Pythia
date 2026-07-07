@@ -2,8 +2,15 @@
  * Meta-Selector Prefetcher Implementation
  *
  * Runs Tsetlin, LinUCB, and Stride prefetchers simultaneously.
- * Each invocation: all three predict → confidence computed → winner selected →
- * winner's predictions issued.  All three continue learning regardless.
+ * Uses UCB on actual prefetch accuracy (PT hit rate) to select between
+ * Tsetlin and LinUCB.  Stride is fallback-only (when both ML have no predictions).
+ * All three continue learning regardless of selection.
+ *
+ * Improvements over confidence-only v1:
+ *   P4: Outcome-based accuracy tracking with UCB selection
+ *   P2: Stride restricted to fallback-only role
+ *   P3: Faster EMA adaptation (alpha 0.01 → 0.1)
+ *   P5: Context-aware selection via PC-indexed accuracy table
  */
 
 #include "meta_selector.h"
@@ -54,12 +61,24 @@ MetaSelectorPrefetcher::MetaSelectorPrefetcher(
         bool linucb_history_features,
         // Meta-selector-specific
         float meta_conf_alpha,
-        float meta_epsilon)
+        float meta_epsilon,
+        float meta_accuracy_alpha,
+        float meta_ucb_c,
+        uint32_t meta_sample_interval,
+        float meta_ctx_blend)
     : Prefetcher(type)
     , m_tsetlin(nullptr)
     , m_linucb(nullptr)
     , m_stride(nullptr)
     , m_conf_alpha(meta_conf_alpha)
+    , m_accuracy_alpha(meta_accuracy_alpha)
+    , m_sample_interval(meta_sample_interval)
+    , m_sample_counter(0)
+    , m_last_winner(-1)
+    , m_has_sampled(false)
+    , m_ucb_c(meta_ucb_c)
+    , m_ctx_blend(meta_ctx_blend)
+    , m_last_pc(0)
     , m_total_invocations(0)
     , m_rng(seed + 777)   // distinct seed from sub-prefetchers
     , m_meta_epsilon(meta_epsilon)
@@ -69,8 +88,19 @@ MetaSelectorPrefetcher::MetaSelectorPrefetcher(
     for (int i = 0; i < SP_COUNT; i++) {
         m_conf_ema[i] = 0.0f;
         m_selected_count[i] = 0;
+        m_last_pt_hit[i] = 0;
+        m_issued_since_sample[i] = 0;
+        m_accuracy_ema[i] = 0.0f;
     }
     memset(&m_stats, 0, sizeof(m_stats));
+
+    // Initialize context table
+    for (uint32_t i = 0; i < CTX_TABLE_SIZE; i++) {
+        for (int j = 0; j < SP_COUNT; j++) {
+            m_ctx_table[i].acc_ema[j] = 0.0f;
+        }
+        m_ctx_table[i].sample_count = 0;
+    }
 
     // ---- Create Tsetlin sub-prefetcher ----
     TsetlinMachine::Config tm_cfg_copy = tm_cfg;
@@ -124,94 +154,185 @@ MetaSelectorPrefetcher::~MetaSelectorPrefetcher()
 }
 
 /* ==========================================================================
- * Core Selection Logic
+ * Accuracy Tracking (P4)
  * ========================================================================== */
 
-int32_t MetaSelectorPrefetcher::select_best_prefetcher()
+uint64_t MetaSelectorPrefetcher::get_sub_pt_hits(int32_t idx) const
 {
+    switch (idx) {
+        case SP_TSETLIN: return m_tsetlin->get_pt_hit_count();
+        case SP_LINUCB:  return m_linucb->get_pt_hit_count();
+        case SP_STRIDE:  return 0;  // Stride has no PT — accuracy tracked via confidence
+        default:         return 0;
+    }
+}
+
+void MetaSelectorPrefetcher::update_accuracy()
+{
+    m_has_sampled = true;  // mark that sampling has occurred (fixes Bug #2)
+
+    // ---- Compute accuracy delta for each sub-prefetcher ----
+    // accuracy = (PT hits since last sample) / (prefetches issued since last sample)
+    for (int i = 0; i < SP_COUNT; i++) {
+        uint64_t cur_hits = get_sub_pt_hits(i);
+        uint64_t delta_hits = cur_hits - m_last_pt_hit[i];
+
+        // For Stride (PT-less), use confidence as proxy for accuracy.
+        // Stride's streak-based confidence is a reasonable signal since it
+        // directly measures pattern stability.
+        float raw_accuracy;
+        if (i == SP_STRIDE) {
+            // Use EMA-normalized confidence as synthetic accuracy for Stride.
+            // This is only used for stats/logging since Stride is fallback-only.
+            float raw_conf = m_stride->get_last_confidence();
+            float denom = m_conf_ema[i] + 1e-6f;
+            float norm_conf = (denom > 1e-6f) ? raw_conf / denom : 0.0f;
+            raw_accuracy = (norm_conf > 1.0f) ? 1.0f : norm_conf;
+        } else {
+            float denom = (float)m_issued_since_sample[i];
+            raw_accuracy = (denom > 0.0f)
+                ? (float)delta_hits / denom
+                : 0.0f;
+        }
+
+        // EMA update
+        if (m_accuracy_ema[i] == 0.0f) {
+            // First sample: bootstrap
+            m_accuracy_ema[i] = raw_accuracy;
+        } else {
+            m_accuracy_ema[i] = m_accuracy_alpha * raw_accuracy
+                              + (1.0f - m_accuracy_alpha) * m_accuracy_ema[i];
+        }
+
+        // Reset for next sampling window
+        m_last_pt_hit[i] = cur_hits;
+        m_issued_since_sample[i] = 0;
+    }
+
+    // ---- Update context table entry for the last seen PC ----
+    uint32_t ctx_idx = (m_last_pc >> 1) & (CTX_TABLE_SIZE - 1);
+    ContextEntry& ctx = m_ctx_table[ctx_idx];
+
+    for (int i = 0; i < SP_COUNT; i++) {
+        // Blend the global EMA into the context entry with a slower learning
+        // rate, since each individual context sees fewer samples.
+        if (ctx.acc_ema[i] == 0.0f) {
+            ctx.acc_ema[i] = m_accuracy_ema[i];
+        } else {
+            // Slow update for context — it sees fewer samples
+            float ctx_alpha = m_accuracy_alpha * 0.5f;
+            ctx.acc_ema[i] = ctx_alpha * m_accuracy_ema[i]
+                           + (1.0f - ctx_alpha) * ctx.acc_ema[i];
+        }
+    }
+    ctx.sample_count++;
+}
+
+/* ==========================================================================
+ * Core Selection Logic (P4: UCB on accuracy, P2: Stride fallback, P5: context)
+ * ========================================================================== */
+
+int32_t MetaSelectorPrefetcher::select_best_prefetcher(uint64_t pc)
+{
+    // ---- Step 0: Check which ML prefetchers have predictions ----
+    bool ts_has_pred = !m_buffers[SP_TSETLIN].empty();
+    bool cb_has_pred = !m_buffers[SP_LINUCB].empty();
+    bool st_has_pred = !m_buffers[SP_STRIDE].empty();
+
+    // ---- Improvement #2: Stride as FALLBACK ONLY ----
+    // When both ML prefetchers have no predictions, use Stride as safety net.
+    if (!ts_has_pred && !cb_has_pred) {
+        m_stats.stride_fallback++;
+        if (st_has_pred) {
+            return SP_STRIDE;
+        }
+        // All three empty — return Stride as default (no predictions anyway)
+        m_stats.all_empty++;
+        return SP_STRIDE;
+    }
+
+    // If only one ML prefetcher has predictions, use it directly.
+    // No need for UCB when there's only one viable option.
+    if (ts_has_pred && !cb_has_pred) {
+        m_stats.single_ml++;
+        return SP_TSETLIN;
+    }
+    if (!ts_has_pred && cb_has_pred) {
+        m_stats.single_ml++;
+        return SP_LINUCB;
+    }
+
+    // Both ML prefetchers have predictions — select between them via UCB.
+
     // ---- Meta-level exploration (P3: prevents training starvation) ----
-    // Non-winning prefetchers never get their predictions issued, so their PT
-    // entries accumulate negative (unfilled) rewards.  Over time this creates
-    // a "rich get richer" dynamic.  Meta-level epsilon-greedy ensures each
-    // prefetcher gets occasional training opportunities.
+    // Reduced from 5% to 2% since UCB provides its own exploration bonus.
+    // When exploring, only pick among prefetchers with predictions.
     std::uniform_real_distribution<float> meta_dist(0.0f, 1.0f);
     if (meta_dist(m_rng) < m_meta_epsilon) {
         m_stats.meta_explore++;
-        // Pick uniformly among all three to give each a fair shot
-        std::uniform_int_distribution<int32_t> pick(0, SP_COUNT - 1);
+        // Pick uniformly among the two ML prefetchers (both have predictions)
+        std::uniform_int_distribution<int32_t> pick(0, 1);
         int32_t probe = pick(m_rng);
-        // Still update EMAs so the confidence tracker stays current
-        float raw[SP_COUNT];
-        raw[SP_TSETLIN] = m_tsetlin->get_last_confidence();
-        raw[SP_LINUCB]  = m_linucb->get_last_confidence();
-        raw[SP_STRIDE]  = m_stride->get_last_confidence();
-        for (int i = 0; i < SP_COUNT; i++) {
-            if (m_conf_ema[i] == 0.0f) {
-                m_conf_ema[i] = raw[i];
-            } else {
-                m_conf_ema[i] = m_conf_alpha * raw[i]
-                              + (1.0f - m_conf_alpha) * m_conf_ema[i];
-            }
-        }
-        return probe;
+        int32_t choice = (probe == 0) ? SP_TSETLIN : SP_LINUCB;
+        return choice;
     }
     m_stats.meta_exploit++;
 
-    // ---- Confidence-based selection ----
-    // Gather raw confidence from each sub-prefetcher
-    float raw_conf[SP_COUNT];
-    raw_conf[SP_TSETLIN] = m_tsetlin->get_last_confidence();
-    raw_conf[SP_LINUCB]  = m_linucb->get_last_confidence();
-    raw_conf[SP_STRIDE]  = m_stride->get_last_confidence();
+    // ---- P4: UCB selection based on actual accuracy ----
+    // Compute UCB score for each ML prefetcher:
+    //   score = accuracy_ema + c * sqrt(log(total) / n_i)
+    // where total = sum of selections, n_i = selections of arm i.
 
-    // Update EMA for each (warm-start: first sample sets the EMA)
+    // Compute context-blended accuracy (P5)
+    uint32_t ctx_idx = (pc >> 1) & (CTX_TABLE_SIZE - 1);
+    ContextEntry& ctx = m_ctx_table[ctx_idx];
+
+    float blended_acc[SP_COUNT];
     for (int i = 0; i < SP_COUNT; i++) {
-        if (m_conf_ema[i] == 0.0f) {
-            // First sample: bootstrap EMA with this value
-            m_conf_ema[i] = raw_conf[i];
-        } else {
-            // Standard EMA: slow decay toward current value
-            m_conf_ema[i] = m_conf_alpha * raw_conf[i]
-                          + (1.0f - m_conf_alpha) * m_conf_ema[i];
+        if (i == SP_STRIDE) { blended_acc[i] = 0.0f; continue; }  // not used in UCB
+        // Blend context-specific accuracy with global accuracy
+        blended_acc[i] = m_ctx_blend * ctx.acc_ema[i]
+                       + (1.0f - m_ctx_blend) * m_accuracy_ema[i];
+        // Clamp to valid range
+        if (blended_acc[i] < 0.0f) blended_acc[i] = 0.0f;
+        if (blended_acc[i] > 1.0f) blended_acc[i] = 1.0f;
+    }
+
+    // Total selections among ML prefetchers for UCB
+    uint64_t total_ml = m_selected_count[SP_TSETLIN]
+                      + m_selected_count[SP_LINUCB];
+    if (total_ml < 1) total_ml = 1;
+
+    float best_score = -1.0f;
+    int32_t best = SP_TSETLIN;  // default
+
+    for (int i = 0; i < SP_COUNT; i++) {
+        // Skip Stride in normal selection (fallback only)
+        if (i == SP_STRIDE) continue;
+
+        // Exploration bonus: more bonus for less-tried arms
+        uint64_t n_i = m_selected_count[i];
+        if (n_i < 1) n_i = 1;
+        float exploration = m_ucb_c * sqrtf(logf((float)total_ml) / (float)n_i);
+
+        float score = blended_acc[i] + exploration;
+        if (score > best_score) {
+            best_score = score;
+            best = i;
         }
     }
 
-    // Normalize each confidence by its own EMA (self-calibrating).
-    // A prefetcher is "confident" when its current confidence exceeds its
-    // historical average.
-    float norm_conf[SP_COUNT];
-    for (int i = 0; i < SP_COUNT; i++) {
-        float denom = m_conf_ema[i] + 1e-6f;
-        norm_conf[i] = raw_conf[i] / denom;
-    }
-
-    // Pick the prefetcher with the highest normalized confidence.
-    // In the degenerate case where all confidences are ~0 (cold start),
-    // all norm_conf values will be ~0 and the fallback chooses the one
-    // that actually has predictions in its buffer (checked by caller).
-    int32_t best = SP_STRIDE;
-    float best_score = norm_conf[SP_STRIDE];
-
-    if (norm_conf[SP_TSETLIN] > best_score) {
-        best = SP_TSETLIN;
-        best_score = norm_conf[SP_TSETLIN];
-    }
-    if (norm_conf[SP_LINUCB] > best_score) {
-        best = SP_LINUCB;
-        best_score = norm_conf[SP_LINUCB];
-    }
-
-    // If all three produced effectively zero confidence, fall back to picking
-    // one that actually generated predictions, preferring Tsetlin > LinUCB > Stride
-    // (Tsetlin and LinUCB have exploration that may produce useful probes).
-    if (best_score < 1e-6f) {
-        // Try Tsetlin first (has epsilon-greedy exploration)
-        if (!m_buffers[SP_TSETLIN].empty()) {
+    // Cold start: if accuracy has never been sampled yet,
+    // fall back to confidence-based selection.  Uses m_has_sampled instead of
+    // testing m_accuracy_ema == 0.0f, because accuracy can legitimately be 0.0
+    // after sampling (no PT hits occurred), which must not re-trigger this path.
+    if (!m_has_sampled) {
+        float raw_ts = m_tsetlin->get_last_confidence();
+        float raw_cb = m_linucb->get_last_confidence();
+        if (raw_ts >= raw_cb) {
             best = SP_TSETLIN;
-        } else if (!m_buffers[SP_LINUCB].empty()) {
-            best = SP_LINUCB;
         } else {
-            best = SP_STRIDE;  // Stride is always safe (conservative)
+            best = SP_LINUCB;
         }
     }
 
@@ -237,6 +358,14 @@ void MetaSelectorPrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address,
                                                std::vector<uint64_t>& pref_addr)
 {
     m_total_invocations++;
+    m_last_pc = pc;
+
+    // ---- Periodic accuracy sampling (P4) ----
+    m_sample_counter++;
+    if (m_sample_counter >= m_sample_interval) {
+        update_accuracy();
+        m_sample_counter = 0;
+    }
 
     // Clear sub-buffers
     for (int i = 0; i < SP_COUNT; i++) {
@@ -244,34 +373,37 @@ void MetaSelectorPrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address,
     }
 
     // ---- Step 1: Snapshot PT sizes before invoke ----
-    // Tsetlin and LinUCB use Prefetch Trackers (PT) for delayed reward.
-    // Stride is PT-less — no snapshot needed.
     uint32_t ts_pt_before = m_tsetlin->get_pt_size();
     uint32_t cb_pt_before = m_linucb->get_pt_size();
 
     // ---- Step 2: Run all three sub-prefetchers ----
-    // Each updates its internal state (tracking tables, feature generation,
-    // model prediction) and fills its own prediction buffer.
-    // IMPORTANT: Each also creates PT entries for its predictions — but only
-    // the winner's predictions will actually be issued.  Loser PT entries
-    // must be discarded (Step 4) to prevent systematic negative feedback:
-    // an unissued prediction can never be filled, so it should never exist
-    // in the PT.
     m_tsetlin->invoke_prefetcher(pc, address, cache_hit, type, m_buffers[SP_TSETLIN]);
     m_linucb->invoke_prefetcher(pc, address, cache_hit, type, m_buffers[SP_LINUCB]);
     m_stride->invoke_prefetcher(pc, address, cache_hit, type, m_buffers[SP_STRIDE]);
 
-    // ---- Step 3: Compute confidence and select the winner ----
-    int32_t winner = select_best_prefetcher();
+    // ---- Step 2b: Update confidence EMAs (secondary diagnostic signal) ----
+    // Must be done every invocation while sub-prefetcher confidences are fresh.
+    {
+        float raw[SP_COUNT];
+        raw[SP_TSETLIN] = m_tsetlin->get_last_confidence();
+        raw[SP_LINUCB]  = m_linucb->get_last_confidence();
+        raw[SP_STRIDE]  = m_stride->get_last_confidence();
+        for (int i = 0; i < SP_COUNT; i++) {
+            if (m_conf_ema[i] == 0.0f) {
+                m_conf_ema[i] = raw[i];
+            } else {
+                m_conf_ema[i] = m_conf_alpha * raw[i]
+                              + (1.0f - m_conf_alpha) * m_conf_ema[i];
+            }
+        }
+    }
+
+    // ---- Step 3: Select the winner (P4: UCB, P2: Stride fallback) ----
+    int32_t winner = select_best_prefetcher(pc);
     m_selected_count[winner]++;
+    m_last_winner = winner;
 
     // ---- Step 4: Discard loser PT entries ----
-    // Losers' predictions were never issued → their PT entries would never
-    // be filled → would all generate negative (incorrect) feedback on eviction.
-    // Popping them back to pre-invoke size removes exactly the entries created
-    // by this invocation, leaving older entries (from previous wins) intact.
-    //
-    // Stride has no PT — no action needed.
     if (winner != SP_TSETLIN) {
         m_tsetlin->pop_pt_entries(ts_pt_before);
     }
@@ -283,17 +415,8 @@ void MetaSelectorPrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address,
     std::vector<uint64_t>& winner_buf = m_buffers[winner];
     if (!winner_buf.empty()) {
         pref_addr.insert(pref_addr.end(), winner_buf.begin(), winner_buf.end());
-    }
-
-    // Track degenerate case: all three produced empty predictions
-    {
-        bool all_empty = true;
-        for (int i = 0; i < SP_COUNT; i++) {
-            if (!m_buffers[i].empty()) { all_empty = false; break; }
-        }
-        if (all_empty) {
-            m_stats.all_empty++;
-        }
+        // Track issued count for accuracy computation
+        m_issued_since_sample[winner] += (uint64_t)winner_buf.size();
     }
 }
 
@@ -306,6 +429,9 @@ void MetaSelectorPrefetcher::register_fill(uint64_t address)
     // Forward to all sub-prefetchers.  Loser PT entries were already discarded
     // in invoke_prefetcher (Step 4), so this fill only matches the winner's
     // entries — exactly the ones that were actually issued.
+    //
+    // The sub-prefetcher's internal m_stats.pt.hit is incremented when a fill
+    // matches a PT entry, which provides the accuracy signal for UCB.
     m_tsetlin->register_fill(address);
     m_linucb->register_fill(address);
     // Stride prefetcher doesn't have register_fill (PT-less design)
@@ -358,16 +484,26 @@ void MetaSelectorPrefetcher::dump_stats()
              << " (" << pct << "%)" << endl;
     }
 
-    // Confidence EMA values
+    // Accuracy EMAs (P4 — primary selection signal)
+    for (int i = 0; i < SP_COUNT; i++) {
+        cout << "meta_accuracy_ema_" << sub_pref_name(i)
+             << " " << m_accuracy_ema[i] << endl;
+    }
+
+    // Confidence EMAs (secondary signal)
     for (int i = 0; i < SP_COUNT; i++) {
         cout << "meta_conf_ema_" << sub_pref_name(i)
              << " " << m_conf_ema[i] << endl;
     }
 
     cout << "meta_all_empty " << m_stats.all_empty << endl;
+    cout << "meta_stride_fallback " << m_stats.stride_fallback << endl;
+    cout << "meta_single_ml " << m_stats.single_ml << endl;
     cout << "meta_explore " << m_stats.meta_explore << endl;
     cout << "meta_exploit " << m_stats.meta_exploit << endl;
     cout << "meta_epsilon " << m_meta_epsilon << endl;
+    cout << "meta_ucb_c " << m_ucb_c << endl;
+    cout << "meta_ctx_blend " << m_ctx_blend << endl;
     cout << endl;
 
     // Dump sub-prefetcher stats
@@ -383,6 +519,11 @@ void MetaSelectorPrefetcher::dump_stats()
 void MetaSelectorPrefetcher::print_config()
 {
     cout << "meta_selector_conf_alpha " << m_conf_alpha << endl;
+    cout << "meta_selector_epsilon " << m_meta_epsilon << endl;
+    cout << "meta_selector_accuracy_alpha " << m_accuracy_alpha << endl;
+    cout << "meta_selector_ucb_c " << m_ucb_c << endl;
+    cout << "meta_selector_sample_interval " << m_sample_interval << endl;
+    cout << "meta_selector_ctx_blend " << m_ctx_blend << endl;
     cout << endl;
     cout << "--- Tsetlin Sub-Config ---" << endl;
     m_tsetlin->print_config();

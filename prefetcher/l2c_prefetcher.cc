@@ -1,46 +1,268 @@
+/*
+ * Meta-Selector Prefetcher - L2 Cache Wrapper
+ *
+ * Integrates the MetaSelectorPrefetcher into ChampSim's CACHE class
+ * for L2 cache prefetching. This wrapper is copied to l2c_prefetcher.cc
+ * during the build process.
+ *
+ * The meta-selector runs three base prefetchers (Tsetlin, LinUCB, Stride)
+ * simultaneously and selects the most confident one's predictions to issue.
+ *
+ * Build usage:
+ *   ./build_champsim.sh no meta_selector no 1
+ */
+
+#include <string>
+#include <vector>
+#include <algorithm>
 #include "cache.h"
+#include "prefetcher.h"
+#include "meta_selector.h"
 
-void CACHE::l2c_prefetcher_initialize() 
-{
+using namespace std;
 
+// ---- Knob declarations (from config/*.ini) ----
+namespace knob {
+    // Meta-selector specific
+    extern float    meta_selector_conf_alpha;
+    extern float    meta_selector_epsilon;
+    extern uint64_t meta_selector_rng_seed;
+    extern float    meta_selector_accuracy_alpha;
+    extern float    meta_selector_ucb_c;
+    extern uint32_t meta_selector_sample_interval;
+    extern float    meta_selector_ctx_blend;
+
+    // Tsetlin knobs
+    extern uint32_t tsetlin_num_clauses;
+    extern uint32_t tsetlin_num_features;
+    extern uint32_t tsetlin_num_actions;
+    extern uint32_t tsetlin_num_states;
+    extern float    tsetlin_s;
+    extern int32_t  tsetlin_threshold;
+    extern uint64_t tsetlin_seed;
+    extern vector<int32_t> tsetlin_actions;
+    extern uint32_t tsetlin_pt_size;
+    extern uint32_t tsetlin_pref_degree;
+    extern float    tsetlin_epsilon;
+    extern uint32_t tsetlin_high_bw_thresh;
+    extern uint32_t tsetlin_rng_seed;
+    extern bool     tsetlin_enable_dyn_degree;
+    extern vector<int32_t> tsetlin_dyn_deg_thresh;
+    extern vector<int32_t> tsetlin_dyn_deg_values;
+    extern vector<int32_t> tsetlin_dyn_deg_thresh_hbw;
+    extern vector<int32_t> tsetlin_dyn_deg_values_hbw;
+    extern uint32_t tsetlin_temp_delta_bits;
+    extern uint32_t tsetlin_interaction_bits;
+    extern uint32_t tsetlin_temp_bw_bits;
+    extern uint32_t tsetlin_delta_sig_bits;
+    extern uint32_t tsetlin_freq_bits;
+    extern uint32_t tsetlin_conf_bits;
+    extern float    tsetlin_epsilon_init;
+    extern uint64_t tsetlin_warmup_invocations;
+    extern bool     tsetlin_featurewise;
+    extern int32_t  tsetlin_pooling;
+    extern float    tsetlin_tm_weight_lr;
+    extern int32_t  tsetlin_encoding;
+    extern uint32_t tsetlin_num_tilings;
+    extern uint32_t tsetlin_tiles_per_tiling;
+
+    // LinUCB knobs
+    extern uint32_t linucb_num_actions;
+    extern uint32_t linucb_num_features;
+    extern float    linucb_alpha;
+    extern float    linucb_lambda;
+    extern uint64_t linucb_seed;
+    extern vector<int32_t> linucb_actions;
+    extern uint32_t linucb_pt_size;
+    extern uint32_t linucb_pref_degree;
+    extern float    linucb_epsilon;
+    extern uint32_t linucb_high_bw_thresh;
+    extern uint32_t linucb_rng_seed;
+    extern bool     linucb_enable_dyn_degree;
+    extern vector<int32_t> linucb_dyn_deg_thresh;
+    extern vector<int32_t> linucb_dyn_deg_values;
+    extern vector<int32_t> linucb_dyn_deg_thresh_hbw;
+    extern vector<int32_t> linucb_dyn_deg_values_hbw;
+    extern bool     linucb_featurewise;
+    extern int32_t  linucb_featurewise_pooling;
+    extern float    linucb_featurewise_weight_lr;
+    extern bool     linucb_suppress_gating;
+    extern float    linucb_suppress_ratio;
+    extern bool     linucb_history_features;
 }
 
-uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip, uint8_t cache_hit, uint8_t type, uint32_t metadata_in)
-{
-  return metadata_in;
+// ---- Helper: build Tsetlin config from knobs ----
+static TsetlinMachine::Config make_tm_config() {
+    TsetlinMachine::Config cfg;
+    cfg.num_clauses   = knob::tsetlin_num_clauses;
+    cfg.num_features  = knob::tsetlin_num_features;
+    cfg.num_actions   = knob::tsetlin_num_actions;
+    cfg.num_states    = knob::tsetlin_num_states;
+    cfg.s             = knob::tsetlin_s;
+    cfg.threshold     = knob::tsetlin_threshold;
+    cfg.seed          = knob::tsetlin_seed;
+    return cfg;
 }
 
-uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t way, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+// ---- Helper: build LinUCB config from knobs ----
+static LinUCB::Config make_cb_config() {
+    LinUCB::Config cfg;
+    cfg.num_actions  = knob::linucb_num_actions;
+    cfg.num_features = knob::linucb_num_features;
+    cfg.alpha        = knob::linucb_alpha;
+    cfg.lambda_      = knob::linucb_lambda;
+    cfg.seed         = knob::linucb_seed;
+    return cfg;
+}
+
+// ---- Helper: action space (shared by Tsetlin and LinUCB) ----
+static vector<int32_t> make_actions() {
+    if (!knob::tsetlin_actions.empty()) {
+        return knob::tsetlin_actions;
+    }
+    // Default action space
+    return {1, 3, 4, 5, 10, 11, 12, 22, 23, 30, 32, -1, -3, -6, 0};
+}
+
+// ---- Singleton prefetcher instance ----
+static MetaSelectorPrefetcher* meta_pref = nullptr;
+
+/* =========================================================================
+ * CACHE Integration Methods
+ * ========================================================================= */
+
+void CACHE::l2c_prefetcher_initialize()
 {
-  return metadata_in;
+    cout << "========================================================" << endl;
+    cout << "Initializing Meta-Selector L2C Prefetcher..." << endl;
+    cout << "  Sub-prefetchers: Tsetlin + LinUCB + Stride" << endl;
+    cout << "========================================================" << endl;
+
+    TsetlinMachine::Config tm_cfg = make_tm_config();
+    LinUCB::Config cb_cfg = make_cb_config();
+    vector<int32_t> actions = make_actions();
+
+    // Update num_actions from the actual action vector
+    tm_cfg.num_actions = (uint32_t)actions.size();
+    cb_cfg.num_actions = (uint32_t)actions.size();
+
+    // Create the meta-selector prefetcher — this internally creates
+    // all three sub-prefetchers with their respective configurations.
+    meta_pref = new MetaSelectorPrefetcher(
+        tm_cfg, cb_cfg, actions,
+        knob::tsetlin_pt_size,
+        knob::tsetlin_pref_degree,
+        knob::tsetlin_epsilon,
+        (uint8_t)knob::tsetlin_high_bw_thresh,
+        knob::meta_selector_rng_seed,
+        "meta_selector",
+        // Tsetlin-specific
+        knob::tsetlin_enable_dyn_degree,
+        knob::tsetlin_dyn_deg_thresh,
+        knob::tsetlin_dyn_deg_values,
+        knob::tsetlin_dyn_deg_thresh_hbw,
+        knob::tsetlin_dyn_deg_values_hbw,
+        knob::tsetlin_temp_delta_bits,
+        knob::tsetlin_interaction_bits,
+        knob::tsetlin_temp_bw_bits,
+        knob::tsetlin_delta_sig_bits,
+        knob::tsetlin_freq_bits,
+        knob::tsetlin_conf_bits,
+        knob::tsetlin_epsilon_init,
+        knob::tsetlin_warmup_invocations,
+        knob::tsetlin_featurewise,
+        knob::tsetlin_pooling,
+        knob::tsetlin_tm_weight_lr,
+        knob::tsetlin_encoding,
+        knob::tsetlin_num_tilings,
+        knob::tsetlin_tiles_per_tiling,
+        // LinUCB-specific
+        knob::linucb_featurewise,
+        knob::linucb_featurewise_pooling,
+        knob::linucb_featurewise_weight_lr,
+        knob::linucb_suppress_gating,
+        knob::linucb_suppress_ratio,
+        knob::linucb_history_features,
+        // Meta-selector-specific
+        knob::meta_selector_conf_alpha,
+        knob::meta_selector_epsilon,
+        knob::meta_selector_accuracy_alpha,
+        knob::meta_selector_ucb_c,
+        knob::meta_selector_sample_interval,
+        knob::meta_selector_ctx_blend);
+
+    cout << "Meta-Selector L2C Prefetcher ready." << endl;
+    cout << "========================================================" << endl;
+}
+
+uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr, uint64_t ip,
+                                        uint8_t cache_hit, uint8_t type,
+                                        uint32_t metadata_in)
+{
+    if (meta_pref == nullptr) return metadata_in;
+
+    vector<uint64_t> pref_addr;
+    meta_pref->invoke_prefetcher(ip, addr, cache_hit, type, pref_addr);
+
+    // Issue prefetch requests to L2
+    for (uint64_t pf_addr : pref_addr) {
+        prefetch_line(ip, addr, pf_addr, FILL_L2, 0);
+    }
+
+    return metadata_in;
+}
+
+uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set,
+                                           uint32_t way, uint8_t prefetch,
+                                           uint64_t evicted_addr,
+                                           uint32_t metadata_in)
+{
+    if (meta_pref != nullptr && prefetch) {
+        meta_pref->register_fill(addr);
+    }
+    return metadata_in;
+}
+
+uint32_t CACHE::l2c_prefetcher_prefetch_hit(uint64_t addr, uint64_t ip,
+                                             uint32_t metadata_in)
+{
+    if (meta_pref != nullptr) {
+        meta_pref->register_prefetch_hit(addr);
+    }
+    return metadata_in;
 }
 
 void CACHE::l2c_prefetcher_final_stats()
 {
-
-}
-
-uint32_t CACHE::l2c_prefetcher_prefetch_hit(uint64_t addr, uint64_t ip, uint32_t metadata_in)
-{
-    return metadata_in;
+    if (meta_pref != nullptr) {
+        meta_pref->dump_stats();
+    }
 }
 
 void CACHE::l2c_prefetcher_print_config()
 {
-	
+    if (meta_pref != nullptr) {
+        meta_pref->print_config();
+    }
 }
 
 void CACHE::l2c_prefetcher_broadcast_bw(uint8_t bw_level)
 {
-
+    if (meta_pref != nullptr) {
+        meta_pref->update_bw(bw_level);
+    }
 }
 
 void CACHE::l2c_prefetcher_broadcast_ipc(uint8_t ipc)
 {
-
+    if (meta_pref != nullptr) {
+        meta_pref->update_ipc(ipc);
+    }
 }
 
 void CACHE::l2c_prefetcher_broadcast_acc(uint32_t acc_level)
 {
-
+    if (meta_pref != nullptr) {
+        meta_pref->update_acc(acc_level);
+    }
 }

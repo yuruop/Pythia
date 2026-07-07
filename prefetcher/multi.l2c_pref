@@ -88,6 +88,10 @@ namespace knob
 	extern float    meta_selector_conf_alpha;
 	extern float    meta_selector_epsilon;
 	extern uint64_t meta_selector_rng_seed;
+	extern float    meta_selector_accuracy_alpha;
+	extern float    meta_selector_ucb_c;
+	extern uint32_t meta_selector_sample_interval;
+	extern float    meta_selector_ctx_blend;
 }
 
 // vector<Prefetcher*> prefetchers;
@@ -315,7 +319,11 @@ void CACHE::l2c_prefetcher_initialize()
 				knob::linucb_suppress_ratio,
 				knob::linucb_history_features,
 				knob::meta_selector_conf_alpha,
-				knob::meta_selector_epsilon);
+				knob::meta_selector_epsilon,
+				knob::meta_selector_accuracy_alpha,
+				knob::meta_selector_ucb_c,
+				knob::meta_selector_sample_interval,
+				knob::meta_selector_ctx_blend);
 			prefetchers.push_back(pref_meta);
 		}
 		else
