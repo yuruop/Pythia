@@ -1,0 +1,34 @@
+##############################################################
+##
+## This file contains reduced-scale experiments for course project.
+## Based on MICRO21_1C.exp with smaller warmup/simulation
+## and fewer DRAM bandwidth variations.
+##
+## Original: warmup=100M sim=500M + 7 DRAM bw points
+## Course:   warmup=10M  sim=50M  + 2 DRAM bw points
+##
+###############################################################
+
+
+# configurations
+BASE = --warmup_instructions=20000000 --simulation_instructions=100000000
+NOPREF = --config=$(PYTHIA_HOME)/config/nopref.ini
+SPP_DEV2 = --l2c_prefetcher_types=spp_dev2 --config=$(PYTHIA_HOME)/config/spp_dev2.ini
+MLOP = --l2c_prefetcher_types=mlop --config=$(PYTHIA_HOME)/config/mlop.ini
+BINGO = --l2c_prefetcher_types=bingo --config=$(PYTHIA_HOME)/config/bingo.ini
+DSPATCH = --l2c_prefetcher_types=dspatch --config=$(PYTHIA_HOME)/config/dspatch.ini
+SPP_PPF_DEV = --l2c_prefetcher_types=spp_ppf_dev --config=$(PYTHIA_HOME)/config/spp_ppf_dev.ini
+PYTHIA = --l2c_prefetcher_types=scooby --config=$(PYTHIA_HOME)/config/pythia.ini
+LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
+TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
+META_SELECTOR = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector.ini
+
+# Core experiments: baseline prefetcher comparison (single-core)
+nopref						$(BASE) $(NOPREF)
+spp						$(BASE) $(SPP_DEV2)
+bingo						$(BASE) $(BINGO)
+mlop						$(BASE) $(MLOP)
+pythia						$(BASE) $(PYTHIA)
+linucb						$(BASE) $(LINUCB)
+tsetlin						$(BASE) $(TSETLIN)
+meta_selector					$(BASE) $(META_SELECTOR)

@@ -1186,15 +1186,26 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
                 ? fabsf(m_cached_best_score) / (fabsf(m_cached_avg_score) + 1e-8f)
                 : 1.0f;
 
-            // P2.8: dynamic gating threshold from recent positive-reward ratio.
+            // P2.9: dynamic gating threshold from recent positive-reward ratio.
             // When the bandit is consistently correct (high pos_ratio), relax
             // the gate to recover coverage.  When accuracy is poor, tighten it.
+            //
+            // P2.9 TUNING (vs P2.8): The original relaxed threshold (1.10 at
+            // pos_ratio > 0.70) proved too aggressive on cache-pollution-sensitive
+            // traces like ligra — it let through speculative prefetches with only
+            // marginally better UCB scores, causing harmful evictions.  New params:
+            //   - pos_ratio > 0.80  → ratio = 1.25  (moderate relaxation)
+            //   - pos_ratio < 0.25  → ratio = 2.00  (tighten slightly earlier)
+            //   - otherwise         → ratio = config default (1.50)
+            // The higher trigger (0.80) and less aggressive relaxation (1.25 vs
+            // 1.10) ensure the gate only opens up when the bandit is truly
+            // excellent, protecting cache-sensitive workloads.
             float effective_ratio = m_suppress_ratio;  // default from config
             if (m_reward_count > 0.0f) {
                 float pos_ratio = m_positive_sum / m_reward_count;
-                if (pos_ratio > 0.70f) {
-                    effective_ratio = 1.10f;  // relaxed: high-confidence pattern
-                } else if (pos_ratio < 0.30f) {
+                if (pos_ratio > 0.80f) {
+                    effective_ratio = 1.25f;  // relaxed: very high confidence
+                } else if (pos_ratio < 0.25f) {
                     effective_ratio = 2.00f;  // tightened: random access suspected
                 }
             }

@@ -397,6 +397,33 @@ void MetaSelectorPrefetcher::invoke_prefetcher(uint64_t pc, uint64_t address,
 
     // ---- Step 3: Select the winner (sticky greedy, P2: Stride fallback) ----
     int32_t winner = select_best_prefetcher();
+
+    // ---- P2.9b: Loser training boost ----
+    // During sticky-greedy exploitation, the loser gets zero training because
+    // its PT entries are discarded immediately (P3.8).  Without any feedback,
+    // the loser's model degrades over time and it can never prove it's
+    // improved — even if the underlying algorithm has become better (e.g.,
+    // after P2.8c dynamic gating).  The epsilon-exploration mechanism provides
+    // only 2.5% training rate per prefetcher, which is often insufficient.
+    //
+    // Fix: with 10% probability, swap the winner for the loser when both ML
+    // prefetchers have predictions.  The loser's predictions are issued,
+    // its PT entries survive, and it receives real training feedback.
+    // This ~10% boost gives the loser enough samples to maintain its model
+    // and potentially prove itself worthy of becoming the new sticky winner.
+    {
+        bool ts_has = !m_buffers[SP_TSETLIN].empty();
+        bool cb_has = !m_buffers[SP_LINUCB].empty();
+        if (ts_has && cb_has) {
+            std::uniform_real_distribution<float> boost_dist(0.0f, 1.0f);
+            if (boost_dist(m_rng) < 0.10f) {
+                int32_t loser = (winner == SP_TSETLIN) ? SP_LINUCB : SP_TSETLIN;
+                winner = loser;
+                m_stats.loser_boost++;
+            }
+        }
+    }
+
     m_selected_count[winner]++;
     m_last_winner = winner;
 
@@ -491,6 +518,7 @@ void MetaSelectorPrefetcher::dump_stats()
     cout << "meta_single_ml " << m_stats.single_ml << endl;
     cout << "meta_explore " << m_stats.meta_explore << endl;
     cout << "meta_greedy " << m_stats.meta_greedy << endl;
+    cout << "meta_loser_boost " << m_stats.loser_boost << "  # P2.9b" << endl;
     cout << "meta_sticky_switches " << m_stats.sticky_switches << endl;
     cout << "meta_hysteresis_margin " << m_hysteresis_margin << endl;
     cout << "meta_epsilon_init " << m_epsilon_init << endl;

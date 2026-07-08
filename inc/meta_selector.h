@@ -136,6 +136,7 @@ private:
         uint64_t stride_fallback;    // times stride was selected as fallback (both ML empty)
         uint64_t single_ml;          // times only one ML prefetcher had predictions
         uint64_t sticky_switches;    // times the sticky winner changed at sample boundary
+        uint64_t loser_boost;        // P2.9b: times loser was swapped in for training
     } m_stats;
 
 public:
