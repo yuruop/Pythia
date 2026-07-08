@@ -13,7 +13,7 @@ Core_0_cycles : sum
 Core_0_LLC_total_access : sum
 Core_0_LLC_total_hit : sum
 Core_0_LLC_total_miss : sum
-Core_0_LLC_load_access : sum
+Core_0_LLC_loads : sum
 Core_0_LLC_load_hit : sum
 Core_0_LLC_load_miss : sum
 Core_0_LLC_RFO_miss : sum
@@ -23,7 +23,7 @@ Core_0_LLC_writeback_miss : sum
 Core_0_L2C_total_access : sum
 Core_0_L2C_total_hit : sum
 Core_0_L2C_total_miss : sum
-Core_0_L2C_load_access : sum
+Core_0_L2C_loads : sum
 Core_0_L2C_load_hit : sum
 Core_0_L2C_load_miss : sum
 
