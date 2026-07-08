@@ -1030,24 +1030,65 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
 
     // ---- P3.0: Stride-teacher curriculum learning (bootstrap) ----
     // When stride_streak >= 3, the current delta is a reliable stride.  During
-    // cold start (first WARMUP_SAMPLES = 512 reward samples), use this as a
-    // teacher signal — directly train LinUCB with a strong positive reward for
-    // the action closest to the observed delta.  This gives the bandit immediate
-    // correct feedback, eliminating the trial-and-error phase on regular patterns.
+    // cold start (first BOOTSTRAP_SAMPLES = 1536 reward samples, P3.1e), use
+    // this as a teacher signal — directly train LinUCB with a positive reward
+    // for the action closest to the observed delta.  This gives the bandit
+    // immediate correct feedback, eliminating trial-and-error on regular patterns.
+    //
+    // P3.1b: Variable teacher reward based on stride_streak length.
+    //   streak 3-4  → reward = 0.60  (emerging pattern, moderate confidence)
+    //   streak 5-7  → reward = 0.80  (established pattern, high confidence)
+    //   streak >= 8 → reward = 0.95  (very stable, near-certain)
+    //
+    // P3.1c: Reward shaping — also train neighboring actions (±1 index) with
+    //   lower reward (0.4× base), creating a smooth gradient around the correct
+    //   action.  This helps the model generalize: if delta=+4 maps to action
+    //   index 5, actions 4 and 6 (e.g., offsets +3 and +5) receive partial
+    //   credit, while far-away actions receive none.
+    //
+    // P3.1e: Extended warmup (1536 vs 512 samples).  LinUCB receives far fewer
+    //   training events than Tsetlin (~100K invocations); the short 512-sample
+    //   window was insufficient for convergence on regular streaming patterns.
     //
     // Curriculum: bootstrap probability decays with accumulated reward samples.
-    if (stride_streak >= 3 && m_reward_count < (float)WARMUP_SAMPLES) {
-        float warmup_progress = m_reward_count / (float)WARMUP_SAMPLES;
+    if (stride_streak >= 3 && m_reward_count < (float)BOOTSTRAP_SAMPLES) {
+        float warmup_progress = m_reward_count / (float)BOOTSTRAP_SAMPLES;
         float bootstrap_prob = 1.0f - warmup_progress;
         if (m_dist(m_rng) < bootstrap_prob) {
             uint32_t stride_action = find_closest_action_cb(delta, m_actions);
             if (stride_action < m_max_actions && m_actions[stride_action] != 0) {
                 m_stats.learn.bootstrap_learned++;
-                float teacher_reward = 0.8f;  // strong positive signal
+
+                // P3.1b: Variable teacher reward based on streak confidence
+                float teacher_reward;
+                if (stride_streak >= 8)       teacher_reward = 0.95f;
+                else if (stride_streak >= 5)  teacher_reward = 0.80f;
+                else                          teacher_reward = 0.60f;  // streak 3-4
+
                 if (m_featurewise) {
                     train_featurewise(features, stride_action, teacher_reward);
+                    // P3.1c: Reward shaping — neighboring actions at 0.4× base
+                    if (stride_action > 0 && m_actions[stride_action - 1] != 0) {
+                        train_featurewise(features, stride_action - 1,
+                                         teacher_reward * 0.4f);
+                    }
+                    if (stride_action + 1 < m_max_actions
+                        && m_actions[stride_action + 1] != 0) {
+                        train_featurewise(features, stride_action + 1,
+                                         teacher_reward * 0.4f);
+                    }
                 } else {
                     m_linucb->update(features, stride_action, teacher_reward);
+                    // P3.1c: Reward shaping — neighboring actions at 0.4× base
+                    if (stride_action > 0 && m_actions[stride_action - 1] != 0) {
+                        m_linucb->update(features, stride_action - 1,
+                                        teacher_reward * 0.4f);
+                    }
+                    if (stride_action + 1 < m_max_actions
+                        && m_actions[stride_action + 1] != 0) {
+                        m_linucb->update(features, stride_action + 1,
+                                        teacher_reward * 0.4f);
+                    }
                 }
             }
         }

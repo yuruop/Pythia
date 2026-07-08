@@ -1190,6 +1190,12 @@ void TsetlinPrefetcher::invoke_prefetcher(
     // This eliminates the trial-and-error phase that dominates Tsetlin's
     // learning on regular streaming patterns (libquantum, milc, lbm).
     //
+    // P3.1b-TS: For very stable patterns (streak >= 10), repeat the update
+    // 2-3×.  Each call randomly selects a different "other" action for Type II
+    // (discrimination) feedback, creating a stronger competitive signal against
+    // multiple alternatives.  The Type I (reinforcement) repetition is idempotent
+    // (TA states saturate at max_state), so the incremental cost is small.
+    //
     // Curriculum: the bootstrap probability decays from 100% to 0% over the
     // warmup period.  Early on, the TM learns almost entirely from the stride
     // teacher.  By the end of warmup, it's operating autonomously.
@@ -1201,10 +1207,16 @@ void TsetlinPrefetcher::invoke_prefetcher(
             uint32_t stride_action = find_closest_action(delta, m_actions);
             if (stride_action < m_max_actions && m_actions[stride_action] != 0) {
                 m_stats.learn.bootstrap_learned++;
-                if (m_featurewise) {
-                    train_featurewise(features, stride_action, true);
-                } else {
-                    m_tm->update(features, stride_action, true);
+                // P3.1b-TS: repeat for higher-confidence streaks
+                uint32_t repeat = 1;
+                if (lot_entry.stride_streak >= 15)       repeat = 3;
+                else if (lot_entry.stride_streak >= 10)  repeat = 2;
+                for (uint32_t r = 0; r < repeat; r++) {
+                    if (m_featurewise) {
+                        train_featurewise(features, stride_action, true);
+                    } else {
+                        m_tm->update(features, stride_action, true);
+                    }
                 }
             }
         }

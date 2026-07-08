@@ -291,6 +291,7 @@ private:
     //       retained so the bandit can recover autonomously.
     static constexpr uint32_t REWARD_WINDOW   = 256;
     static constexpr uint32_t WARMUP_SAMPLES  = 512;  // 2× REWARD_WINDOW (P1.6)
+    static constexpr uint32_t BOOTSTRAP_SAMPLES = 1536;  // P3.1e: 3× WARMUP, extended stride-teacher period
     float  m_reward_ring[REWARD_WINDOW];    // sliding window of recent rewards
     uint32_t m_reward_head;                 // ring buffer write position
     float  m_reward_sum;                    // running sum for O(1) average
