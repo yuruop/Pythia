@@ -2,6 +2,8 @@
 
 > GitHub 仓库：[https://github.com/yuruop/Pythia](https://github.com/yuruop/Pythia)
 
+**要切换到myself分支！！！**
+
 本项目是**计算机体系结构课程实验**，基于开源 ChampSim 模拟器框架 [Pythia](https://github.com/ChampSim/Pythia)，实现了三种硬件数据预取器（Tsetlin Machine、LinUCB Bandit、Stride）及一个**元层智能选择器（MetaSelector）**，构建了"硬件层多预取器池 + 元层实时调度"的分层自适应数据预取系统。元层选择器在每次访存请求时实时评估各子预取器的表现，通过粘性贪婪 + Epsilon 退火策略选出最优预取输出，在多个 SPEC2006/CloudSuite/Ligra 测试程序上实现了最高 56.6% 的 IPC 提升。详细设计见 [方案设计/多层自适应数据预取系统设计方案.md](方案设计/多层自适应数据预取系统设计方案.md)。
 
 ---
