@@ -226,8 +226,8 @@ cd $PYTHIA_HOME/experiments
 # 生成 course_1C 的全部任务脚本（--local 1 表示本机运行，--ncores 20 控制并发数）
 perl $PYTHIA_HOME/scripts/create_jobfile.pl \
   --exe $PYTHIA_HOME/bin/perceptron-multi-multi-no-ship-1core \
-  --tlist $PYTHIA_HOME/experiments/course_1C.tlist \
-  --exp $PYTHIA_HOME/experiments/course_1C.exp \
+  --tlist course_1C.tlist \
+  --exp course_1C.exp \
   --local 1 --ncores 20 > run_course_1C.sh
 
 # 执行（将在 experiments/ 目录下生成大量 .out 文件）
@@ -254,7 +254,7 @@ bash run_course_1C.sh
 >   --exe $PYTHIA_HOME/bin/perceptron-multi-multi-no-ship-1core \
 >   --tlist $PYTHIA_HOME/experiments/course_1C.tlist \
 >   --exp $PYTHIA_HOME/experiments/quick_test_1C.exp \
->   --local 1 --ncores 8 > run_quick.sh
+>   --local 1 --ncores 40 > run_quick.sh
 > bash run_quick.sh
 > ```
 >
@@ -270,8 +270,8 @@ cd $PYTHIA_HOME/experiments
 # 汇总 course_1C 结果（--ext out 指定输出文件扩展名）
 perl $PYTHIA_HOME/scripts/rollup.pl \
   --tlist $PYTHIA_HOME/experiments/course_1C.tlist \
-  --exp $PYTHIA_HOME/experiments/course_1C.exp \
-  --mfile $PYTHIA_HOME/experiments/rollup_1C_base_config.mfile \
+  --exp course_1C.exp \
+  --mfile rollup_1C_base_config.mfile \
   --ext out > $PYTHIA_HOME/res/course_1C_results.csv
 ```
 
