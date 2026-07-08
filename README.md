@@ -246,17 +246,19 @@ bash run_course_1C.sh
 
 `course_1C.exp` 定义了 **8 种预取器 × 3 种 DRAM 带宽**（600/2400/4800 MTPS）共 24 组实验配置，每条 trace 跑 24 组 = 20 条 trace × 24 组 = **480 个任务**。每个任务结束会生成 `{trace名}_{实验名}.out`。
 
-> 完整运行约需 **4-8 小时**（取决于 CPU 核数）。建议先用 2-3 条 trace 做快速验证：
+> 完整运行约需 **4-8 小时**（取决于 CPU 核数）。如果只是想**快速验证流程是否跑通**，可以直接用精简版的 `quick_test_1C.exp`（仅标准带宽、8 种预取器，任务量减至 1/3）：
+>
 > ```bash
-> # 从 course_1C.tlist 中挑少量 trace 生成快速测试
-> head -20 $PYTHIA_HOME/experiments/course_1C.tlist > $PYTHIA_HOME/experiments/quick.tlist
+> cd $PYTHIA_HOME/experiments
 > perl $PYTHIA_HOME/scripts/create_jobfile.pl \
 >   --exe $PYTHIA_HOME/bin/perceptron-multi-multi-no-ship-1core \
->   --tlist $PYTHIA_HOME/experiments/quick.tlist \
->   --exp $PYTHIA_HOME/experiments/course_1C.exp \
+>   --tlist $PYTHIA_HOME/experiments/course_1C.tlist \
+>   --exp $PYTHIA_HOME/experiments/quick_test_1C.exp \
 >   --local 1 --ncores 8 > run_quick.sh
 > bash run_quick.sh
 > ```
+>
+> `quick_test_1C.exp` 与 `course_1C.exp` 的主要区别：去掉了 DRAM 带宽变化（600/4800 MTPS），只保留标准 2400 MTPS 下的 8 种预取器对比。Trace 列表相同（`course_1C.tlist`），约需 **1-2 小时** 完成。
 
 ### 第四步：汇总数据（Rollup）
 
