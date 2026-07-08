@@ -150,6 +150,12 @@ source setvars.sh
 ./build_champsim.sh no linucb no 4
 ./build_champsim.sh no tsetlin no 4
 ./build_champsim.sh multi multi no 4
+
+# ================建议只编译================
+后续测试全部用这两个即可
+./build_champsim.sh multi multi no 1
+./build_champsim.sh multi multi no 4
+
 ```
 
 编译产物位于 `bin/` 目录，命名格式为 `{分支预测器}-{L1D}-{L2C}-{LLC}-{替换}-{核心数}core`，例如 `bin/perceptron-multi-multi-no-ship-1core`。
@@ -209,83 +215,83 @@ perl scripts/download_traces.pl \
 
 `cassandra_phase0_core0.trace.xz`、`nutch_phase0_core0.trace.xz`、`streaming_phase0_core1.trace.xz` 已放在仓库 `traces/` 目录下，无需额外下载。
 
-### 第三步：运行实验
+### 第三步：生成并运行实验（单核 1C）
 
-#### 方案 A：使用自动脚本运行 course_1C（推荐）
+实验的核心流程是：用 `create_jobfile.pl` 将 **trace 定义（`.tlist`）+ 实验参数（`.exp`）** 展开为 ChampSim 命令行，然后批量执行。
 
 ```bash
-cd /workspace/experiments
+# 进入实验目录（以下所有路径统一使用 $PYTHIA_HOME）
+cd $PYTHIA_HOME/experiments
+
+# 生成 course_1C 的全部任务脚本（--local 1 表示本机运行，--ncores 20 控制并发数）
+perl $PYTHIA_HOME/scripts/create_jobfile.pl \
+  --exe $PYTHIA_HOME/bin/perceptron-multi-multi-no-ship-1core \
+  --tlist $PYTHIA_HOME/experiments/course_1C.tlist \
+  --exp $PYTHIA_HOME/experiments/course_1C.exp \
+  --local 1 --ncores 20 > run_course_1C.sh
+
+# 执行（将在 experiments/ 目录下生成大量 .out 文件）
 bash run_course_1C.sh
 ```
 
-`run_course_1C.sh` 自动运行所有 420 个实验组合（8 种预取器 × 20 条 trace × 3 DRAM 带宽），最多 20 个进程并发。运行完毕后，`experiments/` 目录下会生成 420 个 `.out` 文件。
+**`create_jobfile.pl` 参数说明**：
 
-> 完整运行约需 **4-8 小时**（取决于 CPU 核数）。如需快速验证流程，可只运行几条修改 `run_course_1C.sh` 中的任务列表。
+| 参数 | 说明 |
+|------|------|
+| `--exe` | ChampSim 可执行文件完整路径（`multi` 构建 = 内置全部预取器，运行时通过 `--l2c_prefetcher_types` 切换） |
+| `--tlist` | Trace 定义文件（每一段定义 `NAME`、`TRACE` 路径、`KNOBS`） |
+| `--exp` | 实验定义文件（定义 `BASE` 模拟参数 + 各预取器变量 + 实验组合） |
+| `--local` | `1` = 本机并行运行（`xargs -P`）；`0` = 生成 Slurm `sbatch` 脚本 |
+| `--ncores` | 本机并行任务数（建议设为 CPU 核心数，最多 20） |
 
-#### 方案 B：逐条手动运行
+`course_1C.exp` 定义了 **8 种预取器 × 3 种 DRAM 带宽**（600/2400/4800 MTPS）共 24 组实验配置，每条 trace 跑 24 组 = 20 条 trace × 24 组 = **480 个任务**。每个任务结束会生成 `{trace名}_{实验名}.out`。
 
-适合单独测试某个配置：
-
-```bash
-# 示例：运行 MetaSelector 在 libquantum 上的测试
-./bin/perceptron-multi-multi-no-ship-1core \
-    --warmup_instructions=20000000 \
-    --simulation_instructions=100000000 \
-    --config=/workspace/config/meta_selector.ini \
-    -traces /workspace/traces/462.libquantum-1343B.champsimtrace.xz \
-    > 462.libquantum-1343B_meta_selector.out 2>&1
-
-# 查看输出末尾的统计结果
-tail -20 462.libquantum-1343B_meta_selector.out
-```
-
-每条 `.out` 文件末尾包含关键性能统计：`Core_0_IPC`、`Core_0_L2C_prefetch_issued`（预取发出量）、`Core_0_L2C_prefetch_useful`（有效预取）、`Core_0_L2C_prefetch_late`（迟到预取）、`Core_0_LLC_load_miss`（末级缓存缺失数）等。
-
-#### 方案 C：运行 course_4C（四核）
-
-```bash
-# 使用 create_jobfile.pl 生成四核任务文件
-cd /workspace/experiments
-perl ../scripts/create_jobfile.pl \
-    --exe $PYTHIA_HOME/bin/perceptron-multi-multi-no-ship-4core \
-    --tlist course_4C.tlist \
-    --exp course_4C.exp \
-    --local 1 > jobfile_4C.sh
-
-# 运行
-source jobfile_4C.sh
-```
-
-> 注意：不同预取器需要对应的 `--exe` 二进制路径，上述命令需要为每种预取器重复执行。
+> 完整运行约需 **4-8 小时**（取决于 CPU 核数）。建议先用 2-3 条 trace 做快速验证：
+> ```bash
+> # 从 course_1C.tlist 中挑少量 trace 生成快速测试
+> head -20 $PYTHIA_HOME/experiments/course_1C.tlist > $PYTHIA_HOME/experiments/quick.tlist
+> perl $PYTHIA_HOME/scripts/create_jobfile.pl \
+>   --exe $PYTHIA_HOME/bin/perceptron-multi-multi-no-ship-1core \
+>   --tlist $PYTHIA_HOME/experiments/quick.tlist \
+>   --exp $PYTHIA_HOME/experiments/course_1C.exp \
+>   --local 1 --ncores 8 > run_quick.sh
+> bash run_quick.sh
+> ```
 
 ### 第四步：汇总数据（Rollup）
 
-运行完成后，用 `rollup.py` 将各 `.out` 文件中的统计数据汇总为结构化 CSV：
+所有任务跑完后，用 `rollup.pl` 将散落在各个 `.out` 文件中的关键指标汇总为一张结构化 CSV：
 
 ```bash
-cd /workspace/experiments
+cd $PYTHIA_HOME/experiments
 
-# 汇总 1C 结果
-python ../scripts/rollup.py \
-    --tlist course_1C.tlist \
-    --exp rollup_1C_base_config.exp \
-    --mfile rollup_1C_base_config.mfile \
-    -o ../res/course_1C_results.csv
-
-# 汇总 4C 结果
-python ../scripts/rollup.py \
-    --tlist course_4C.tlist \
-    --exp course_4C.exp \
-    --mfile rollup_4C_base_config.mfile \
-    -o ../res/course_4C_results.csv
+# 汇总 course_1C 结果（--ext out 指定输出文件扩展名）
+perl $PYTHIA_HOME/scripts/rollup.pl \
+  --tlist $PYTHIA_HOME/experiments/course_1C.tlist \
+  --exp $PYTHIA_HOME/experiments/course_1C.exp \
+  --mfile $PYTHIA_HOME/experiments/rollup_1C_base_config.mfile \
+  --ext out > $PYTHIA_HOME/res/course_1C_results.csv
 ```
 
-`rollup.py` 会读取：
-- `--tlist` 定义的 trace 列表
-- `--exp` 定义的实验组合（预取器 + 参数）
-- `--mfile` 定义的输出指标（IPC、预取量、MetaSelector 决策分布等）
+**参数说明**：
 
-输出 CSV 格式如下：
+| 参数 | 说明 |
+|------|------|
+| `--tlist` | Trace 定义文件（与运行实验时一致） |
+| `--exp` | 实验定义文件（与运行实验时一致） |
+| `--mfile` | Metric 定义文件：指定从 `.out` 中提取哪些统计指标（IPC、预取量、MetaSelector 决策分布等）及聚合方式 |
+| `--ext` | 输出文件的扩展名（默认为 `txt`，若运行时没加 `> xxx.out` 则需调整） |
+
+> 仓库同时提供了 Python 版 `scripts/rollup.py`，用法类似：
+> ```bash
+> python $PYTHIA_HOME/scripts/rollup.py \
+>   --tlist $PYTHIA_HOME/experiments/course_1C.tlist \
+>   --exp $PYTHIA_HOME/experiments/course_1C.exp \
+>   --mfile $PYTHIA_HOME/experiments/rollup_1C_base_config.mfile \
+>   -o $PYTHIA_HOME/res/course_1C_results.csv
+> ```
+
+输出的 CSV 格式如下（每行 = 一条 trace × 一组实验配置）：
 
 | Trace | Exp | Core_0_IPC | Core_0_L2C_prefetch_issued | ... |
 |-------|-----|-----------|---------------------------|-----|
@@ -296,18 +302,12 @@ python ../scripts/rollup.py \
 ### 第五步：分析结果
 
 ```bash
-cd /workspace
+cd $PYTHIA_HOME
 
 # 生成完整分析报告（16 张图表 + 统计检验）
-python experiments/analyze_all.py \
-    --csv res/course_1C_results.csv \
-    --out res/
-
-# 包含 4C 结果
-python experiments/analyze_all.py \
-    --csv res/course_1C_results.csv \
-    --csv4c res/course_4C_results.csv \
-    --out res/
+python $PYTHIA_HOME/experiments/analyze_all.py \
+    --csv $PYTHIA_HOME/res/course_1C_results.csv \
+    --out $PYTHIA_HOME/res/
 ```
 
 运行结束后，`res/` 目录下生成以下文件：
@@ -332,6 +332,38 @@ python experiments/analyze_all.py \
 | 16 | `*_chart16_summary_table.png` | 汇总统计表 |
 
 同时终端输出**配对 t 检验**的 Win/Tie/Loss 分析和分类别 Speedup 汇总。
+
+---
+
+### 四核实验（4C）
+
+流程与 1C 完全一致，仅需替换对应的 `.tlist`、`.exp`、`--exe` 和 `--mfile`：
+
+```bash
+# 1. 生成四核任务
+cd $PYTHIA_HOME/experiments
+perl $PYTHIA_HOME/scripts/create_jobfile.pl \
+  --exe $PYTHIA_HOME/bin/perceptron-multi-multi-no-ship-4core \
+  --tlist $PYTHIA_HOME/experiments/course_4C.tlist \
+  --exp $PYTHIA_HOME/experiments/course_4C.exp \
+  --local 1 --ncores 10 > run_course_4C.sh
+
+# 2. 运行
+bash run_course_4C.sh
+
+# 3. 汇总
+perl $PYTHIA_HOME/scripts/rollup.pl \
+  --tlist $PYTHIA_HOME/experiments/course_4C.tlist \
+  --exp $PYTHIA_HOME/experiments/course_4C.exp \
+  --mfile $PYTHIA_HOME/experiments/rollup_4C_base_config.mfile \
+  --ext out > $PYTHIA_HOME/res/course_4C_results.csv
+
+# 4. 分析（合并 1C + 4C）
+python $PYTHIA_HOME/experiments/analyze_all.py \
+    --csv $PYTHIA_HOME/res/course_1C_results.csv \
+    --csv4c $PYTHIA_HOME/res/course_4C_results.csv \
+    --out $PYTHIA_HOME/res/
+```
 
 ---
 
