@@ -497,8 +497,9 @@ void MetaSelectorPrefetcher::dump_stats()
             ? 100.0f * (float)m_selected_count[i] / (float)total_selections
             : 0.0f;
         cout << "meta_selected_" << sub_pref_name(i)
-             << " " << m_selected_count[i]
-             << " (" << pct << "%)" << endl;
+             << " " << m_selected_count[i] << endl;
+        cout << "meta_selected_pct_" << sub_pref_name(i)
+             << " " << pct << endl;
     }
 
     // Accuracy EMAs
@@ -518,7 +519,7 @@ void MetaSelectorPrefetcher::dump_stats()
     cout << "meta_single_ml " << m_stats.single_ml << endl;
     cout << "meta_explore " << m_stats.meta_explore << endl;
     cout << "meta_greedy " << m_stats.meta_greedy << endl;
-    cout << "meta_loser_boost " << m_stats.loser_boost << "  # P2.9b" << endl;
+    cout << "meta_loser_boost " << m_stats.loser_boost << endl;
     cout << "meta_sticky_switches " << m_stats.sticky_switches << endl;
     cout << "meta_hysteresis_margin " << m_hysteresis_margin << endl;
     cout << "meta_epsilon_init " << m_epsilon_init << endl;

@@ -31,6 +31,26 @@ static constexpr uint32_t MAX_FEATURES = 32;  // P1.4: headroom for freq/conf
 static constexpr float kMaxOffsetFloat =
     (float)((1 << (LOG2_PAGE_SIZE - LOG2_BLOCK_SIZE)) - 1);
 
+/* -------------------------------------------------------------------------
+ * P3.0: Find the action index whose offset value is closest to a given delta.
+ * Skips action=0 (no-prefetch).  Used by the Stride bootstrap mechanism.
+ * ------------------------------------------------------------------------- */
+static uint32_t find_closest_action_cb(int32_t delta, const std::vector<int32_t>& actions)
+{
+    uint32_t best_idx = 0;
+    int32_t  best_dist = INT32_MAX;
+    for (uint32_t i = 0; i < actions.size(); i++) {
+        if (actions[i] == 0) continue;
+        int32_t dist = (delta > actions[i]) ? (delta - actions[i])
+                                            : (actions[i] - delta);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_idx = i;
+        }
+    }
+    return best_idx;
+}
+
 /* =========================================================================
  * LinUCB Implementation
  * ========================================================================= */
@@ -471,6 +491,7 @@ ContextualBanditPrefetcher::ContextualBanditPrefetcher(
     m_stats.reward.incorrect = 0; m_stats.reward.no_pref = 0;
     m_stats.learn.called = 0; m_stats.learn.learned_positive = 0;
     m_stats.learn.learned_negative = 0; m_stats.learn.learn_skipped_no_reward = 0;
+    m_stats.learn.bootstrap_learned = 0;
     m_stats.suppress.called = 0; m_stats.suppress.suppressed = 0;        // P1.6
     m_stats.suppress.suppressed_prob = 0; m_stats.suppress.suppressed_escape = 0;  // P1.6
     m_stats.register_fill.called = 0; m_stats.register_fill.set = 0;
@@ -1006,6 +1027,31 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     float features[MAX_FEATURES];
     generate_features(pc, page, offset, delta, m_bw_level, delta_sig,
                       access_count, last_confidence, stride_streak, features);
+
+    // ---- P3.0: Stride-teacher curriculum learning (bootstrap) ----
+    // When stride_streak >= 3, the current delta is a reliable stride.  During
+    // cold start (first WARMUP_SAMPLES = 512 reward samples), use this as a
+    // teacher signal — directly train LinUCB with a strong positive reward for
+    // the action closest to the observed delta.  This gives the bandit immediate
+    // correct feedback, eliminating the trial-and-error phase on regular patterns.
+    //
+    // Curriculum: bootstrap probability decays with accumulated reward samples.
+    if (stride_streak >= 3 && m_reward_count < (float)WARMUP_SAMPLES) {
+        float warmup_progress = m_reward_count / (float)WARMUP_SAMPLES;
+        float bootstrap_prob = 1.0f - warmup_progress;
+        if (m_dist(m_rng) < bootstrap_prob) {
+            uint32_t stride_action = find_closest_action_cb(delta, m_actions);
+            if (stride_action < m_max_actions && m_actions[stride_action] != 0) {
+                m_stats.learn.bootstrap_learned++;
+                float teacher_reward = 0.8f;  // strong positive signal
+                if (m_featurewise) {
+                    train_featurewise(features, stride_action, teacher_reward);
+                } else {
+                    m_linucb->update(features, stride_action, teacher_reward);
+                }
+            }
+        }
+    }
 
     // P2.7 (L-CRIT-1 fix): Delta variance EMA — replaces the old always-0.0f
     // placeholder with a real signal.  Feature 12 now reflects actual delta
@@ -1786,6 +1832,7 @@ void ContextualBanditPrefetcher::dump_stats() {
     cout << "linucb_learn_positive " << m_stats.learn.learned_positive << endl;
     cout << "linucb_learn_negative " << m_stats.learn.learned_negative << endl;
     cout << "linucb_learn_skipped " << m_stats.learn.learn_skipped_no_reward << endl;
+    cout << "linucb_learn_bootstrap " << m_stats.learn.bootstrap_learned << "  # P3.0" << endl;
     cout << endl;
 
     cout << "linucb_suppress_called " << m_stats.suppress.called << endl;

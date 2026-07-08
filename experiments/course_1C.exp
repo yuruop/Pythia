@@ -5,12 +5,20 @@
 ## and fewer DRAM bandwidth variations.
 ##
 ## Original: warmup=100M sim=500M + 7 DRAM bw points
-## Course:   warmup=10M  sim=50M  + 2 DRAM bw points
+## Course:   warmup=20M  sim=100M + 2 DRAM bw points
+##
+## Experiment plan (see 方案设计/实验方案设计.md):
+##   Phase 1: Baseline performance comparison (1a/1b/1c)
+##   Phase 4: Ablation experiments (4a-4f)
+##   Phase 5: MetaSelector analysis (3a-3e)
 ##
 ###############################################################
 
 
-# configurations
+# =============================================================================
+# Configuration Variables
+# =============================================================================
+
 BASE = --warmup_instructions=20000000 --simulation_instructions=100000000
 NOPREF = --config=$(PYTHIA_HOME)/config/nopref.ini
 SPP_DEV2 = --l2c_prefetcher_types=spp_dev2 --config=$(PYTHIA_HOME)/config/spp_dev2.ini
@@ -23,7 +31,20 @@ LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
 TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
 META_SELECTOR = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector.ini
 
-# Core experiments: baseline prefetcher comparison (single-core)
+# Ablation variants — standalone models
+LINUCB_NO_DYN_DEG    = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb_no_dyn_deg.ini
+TSETLIN_NO_DYN_DEG   = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin_no_dyn_deg.ini
+LINUCB_NO_FW         = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb_no_featurewise.ini
+TSETLIN_NO_FW        = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin_no_featurewise.ini
+LINUCB_NO_SUPPRESS   = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb_no_suppress.ini
+
+# Ablation variants — MetaSelector
+META_SEL_NO_EXPLORE  = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector_no_explore.ini
+
+# =============================================================================
+# Phase 1a: Baseline performance comparison (1C, standard DRAM BW = 2400 MTPS)
+# =============================================================================
+
 nopref						$(BASE) $(NOPREF)
 spp						$(BASE) $(SPP_DEV2)
 bingo						$(BASE) $(BINGO)
@@ -33,8 +54,10 @@ linucb						$(BASE) $(LINUCB)
 tsetlin						$(BASE) $(TSETLIN)
 meta_selector					$(BASE) $(META_SELECTOR)
 
+# =============================================================================
+# Phase 1b: Low bandwidth sensitivity (600 MTPS)
+# =============================================================================
 
-# DRAM bandwidth sensitivity (reduced: only 2 representative points)
 nopref_MTPS600					$(BASE) $(NOPREF) --dram_io_freq=600
 spp_MTPS600					$(BASE) $(SPP_DEV2) --dram_io_freq=600
 bingo_MTPS600					$(BASE) $(BINGO) --dram_io_freq=600
@@ -44,6 +67,10 @@ linucb_MTPS600					$(BASE) $(LINUCB) --dram_io_freq=600
 tsetlin_MTPS600					$(BASE) $(TSETLIN) --dram_io_freq=600
 meta_selector_MTPS600				$(BASE) $(META_SELECTOR) --dram_io_freq=600
 
+# =============================================================================
+# Phase 1c: High bandwidth sensitivity (4800 MTPS)
+# =============================================================================
+
 nopref_MTPS4800					$(BASE) $(NOPREF) --dram_io_freq=4800
 spp_MTPS4800					$(BASE) $(SPP_DEV2) --dram_io_freq=4800
 bingo_MTPS4800					$(BASE) $(BINGO) --dram_io_freq=4800
@@ -52,3 +79,33 @@ pythia_MTPS4800 				$(BASE) $(PYTHIA) --dram_io_freq=4800
 linucb_MTPS4800					$(BASE) $(LINUCB) --dram_io_freq=4800
 tsetlin_MTPS4800				$(BASE) $(TSETLIN) --dram_io_freq=4800
 meta_selector_MTPS4800				$(BASE) $(META_SELECTOR) --dram_io_freq=4800
+
+# =============================================================================
+# Phase 4a: Dynamic Degree Ablation (standard BW)
+#   — 量化动态度预取的独立贡献
+# =============================================================================
+
+tsetlin_no_dyn_deg				$(BASE) $(TSETLIN_NO_DYN_DEG)
+linucb_no_dyn_deg				$(BASE) $(LINUCB_NO_DYN_DEG)
+
+# =============================================================================
+# Phase 4b: Feature-wise Decomposition Ablation (standard BW)
+#   — 量化特征分解的独立贡献
+# =============================================================================
+
+tsetlin_no_featurewise				$(BASE) $(TSETLIN_NO_FW)
+linucb_no_featurewise				$(BASE) $(LINUCB_NO_FW)
+
+# =============================================================================
+# Phase 4d: Epsilon Exploration Ablation — MetaSelector ε=0 (standard BW)
+#   — 量化探索 vs 利用的权衡
+# =============================================================================
+
+meta_selector_no_explore			$(BASE) $(META_SEL_NO_EXPLORE)
+
+# =============================================================================
+# Phase 4 (supplementary): LinUCB Suppress Gating Ablation (standard BW)
+#   — 量化 UCB ratio gating 的贡献
+# =============================================================================
+
+linucb_no_suppress				$(BASE) $(LINUCB_NO_SUPPRESS)

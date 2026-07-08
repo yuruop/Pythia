@@ -358,6 +358,7 @@ private:
             uint64_t learned_positive;
             uint64_t learned_negative;
             uint64_t learn_skipped_no_reward;
+            uint64_t bootstrap_learned;   // P3.0: stride-teacher training events
         } learn;
 
         struct {

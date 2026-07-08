@@ -1,0 +1,74 @@
+# =============================================================================
+# Rollup metric configuration for four-core experiments
+# Each line: <stat_name> : <aggregation_type>
+# 4C format: Core_0 through Core_3 for per-core, plus shared LLC
+# =============================================================================
+
+# ---- Per-Core Performance ----
+Core_0_IPC : sum
+Core_1_IPC : sum
+Core_2_IPC : sum
+Core_3_IPC : sum
+Core_0_instructions : sum
+Core_1_instructions : sum
+Core_2_instructions : sum
+Core_3_instructions : sum
+Core_0_cycles : sum
+Core_1_cycles : sum
+Core_2_cycles : sum
+Core_3_cycles : sum
+
+# ---- Per-Core L2C Prefetch Quality (aggregate across cores) ----
+Core_0_L2C_prefetch_issued : sum
+Core_1_L2C_prefetch_issued : sum
+Core_2_L2C_prefetch_issued : sum
+Core_3_L2C_prefetch_issued : sum
+Core_0_L2C_prefetch_useful : sum
+Core_1_L2C_prefetch_useful : sum
+Core_2_L2C_prefetch_useful : sum
+Core_3_L2C_prefetch_useful : sum
+Core_0_L2C_prefetch_useless : sum
+Core_1_L2C_prefetch_useless : sum
+Core_2_L2C_prefetch_useless : sum
+Core_3_L2C_prefetch_useless : sum
+Core_0_L2C_prefetch_late : sum
+Core_1_L2C_prefetch_late : sum
+Core_2_L2C_prefetch_late : sum
+Core_3_L2C_prefetch_late : sum
+Core_0_L2C_prefetch_filled : sum
+Core_1_L2C_prefetch_filled : sum
+Core_2_L2C_prefetch_filled : sum
+Core_3_L2C_prefetch_filled : sum
+Core_0_L2C_load_miss : sum
+Core_1_L2C_load_miss : sum
+Core_2_L2C_load_miss : sum
+Core_3_L2C_load_miss : sum
+
+# ---- Shared LLC Statistics ----
+Core_0_LLC_total_miss : sum
+Core_0_LLC_load_miss : sum
+Core_0_LLC_RFO_miss : sum
+Core_0_LLC_writeback_miss : sum
+
+# ---- Per-Core Branch Predictor ----
+Core_0_branch_prediction_accuracy : sum
+Core_1_branch_prediction_accuracy : sum
+Core_2_branch_prediction_accuracy : sum
+Core_3_branch_prediction_accuracy : sum
+
+# ---- MetaSelector Selection Distribution ----
+meta_selected_tsetlin : sum
+meta_selected_linucb : sum
+meta_selected_stride : sum
+meta_selected_pct_tsetlin : sum
+meta_selected_pct_linucb : sum
+meta_selected_pct_stride : sum
+
+# ---- MetaSelector Decision Breakdown ----
+meta_total_invocations : sum
+meta_all_empty : sum
+meta_stride_fallback : sum
+meta_explore : sum
+meta_greedy : sum
+meta_loser_boost : sum
+meta_sticky_switches : sum

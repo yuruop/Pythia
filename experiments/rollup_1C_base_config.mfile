@@ -1,10 +1,124 @@
+# =============================================================================
+# Rollup metric configuration for single-core experiments
+# Each line: <stat_name> : <aggregation_type>
+# Types: sum, mean, nzmean, min, max, standard_deviation, variance
+# =============================================================================
+
+# ---- Core Performance Metrics ----
 Core_0_IPC : sum
+Core_0_instructions : sum
+Core_0_cycles : sum
+
+# ---- LLC Cache Statistics ----
+Core_0_LLC_total_access : sum
+Core_0_LLC_total_hit : sum
 Core_0_LLC_total_miss : sum
+Core_0_LLC_load_access : sum
+Core_0_LLC_load_hit : sum
 Core_0_LLC_load_miss : sum
 Core_0_LLC_RFO_miss : sum
 Core_0_LLC_writeback_miss : sum
+
+# ---- L2C Cache Statistics ----
+Core_0_L2C_total_access : sum
+Core_0_L2C_total_hit : sum
+Core_0_L2C_total_miss : sum
+Core_0_L2C_load_access : sum
+Core_0_L2C_load_hit : sum
+Core_0_L2C_load_miss : sum
+
+# ---- L2C Prefetch Quality Metrics ----
+Core_0_L2C_prefetch_requested : sum
 Core_0_L2C_prefetch_issued : sum
 Core_0_L2C_prefetch_useful : sum
+Core_0_L2C_prefetch_useless : sum
 Core_0_L2C_prefetch_late : sum
 Core_0_L2C_prefetch_filled : sum
-Core_0_L2C_load_miss : sum
+Core_0_L2C_prefetch_dropped : sum
+Core_0_L2C_average_miss_latency : sum
+
+# ---- Branch Predictor ----
+Core_0_branch_prediction_accuracy : sum
+Core_0_branch_MPKI : sum
+Core_0_average_ROB_occupancy_at_mispredict : sum
+
+# ---- MetaSelector Selection Distribution (Phase 3) ----
+meta_selected_tsetlin : sum
+meta_selected_linucb : sum
+meta_selected_stride : sum
+meta_selected_pct_tsetlin : sum
+meta_selected_pct_linucb : sum
+meta_selected_pct_stride : sum
+
+# ---- MetaSelector Accuracy & Confidence EMAs ----
+meta_accuracy_ema_tsetlin : sum
+meta_accuracy_ema_linucb : sum
+meta_accuracy_ema_stride : sum
+meta_conf_ema_tsetlin : sum
+meta_conf_ema_linucb : sum
+meta_conf_ema_stride : sum
+
+# ---- MetaSelector Decision Breakdown ----
+meta_total_invocations : sum
+meta_all_empty : sum
+meta_stride_fallback : sum
+meta_single_ml : sum
+meta_explore : sum
+meta_greedy : sum
+meta_loser_boost : sum
+meta_sticky_switches : sum
+meta_epsilon_current : sum
+
+# ---- Tsetlin Prefetch Quality (standalone & MetaSelector sub) ----
+tsetlin_pt_lookup : sum
+tsetlin_pt_hit : sum
+tsetlin_pt_insert : sum
+tsetlin_predict_called : sum
+tsetlin_predict_explore : sum
+tsetlin_predict_exploit : sum
+tsetlin_predict_predicted : sum
+tsetlin_predict_multi_deg_called : sum
+tsetlin_predict_multi_deg_issued : sum
+tsetlin_reward_called : sum
+tsetlin_reward_pt_found : sum
+tsetlin_reward_correct_timely : sum
+tsetlin_reward_correct_untimely : sum
+tsetlin_reward_incorrect : sum
+tsetlin_learn_called : sum
+tsetlin_learn_positive : sum
+tsetlin_learn_negative : sum
+tsetlin_featurewise_pooled_predicts : sum
+tsetlin_featurewise_weight_updates : sum
+
+# ---- LinUCB Prefetch Quality (standalone & MetaSelector sub) ----
+linucb_pt_lookup : sum
+linucb_pt_hit : sum
+linucb_pt_insert : sum
+linucb_predict_called : sum
+linucb_predict_explore : sum
+linucb_predict_exploit : sum
+linucb_predict_predicted : sum
+linucb_predict_multi_deg_called : sum
+linucb_predict_multi_deg_issued : sum
+linucb_predict_gating_checked : sum
+linucb_predict_gating_suppressed : sum
+linucb_reward_called : sum
+linucb_reward_pt_found : sum
+linucb_reward_correct_timely : sum
+linucb_reward_correct_untimely : sum
+linucb_reward_incorrect : sum
+linucb_learn_called : sum
+linucb_learn_positive : sum
+linucb_learn_negative : sum
+linucb_featurewise_pooled_predicts : sum
+linucb_featurewise_weight_updates : sum
+linucb_suppress_called : sum
+linucb_suppress_suppressed : sum
+
+# ---- Stride Prefetcher (standalone & MetaSelector sub) ----
+stride_tracker_lookup : sum
+stride_tracker_hit : sum
+stride_stride_pos : sum
+stride_stride_neg : sum
+stride_pref_generated : sum
+stride_pref_stride_match : sum

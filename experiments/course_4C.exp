@@ -4,14 +4,17 @@
 ## for course project.
 ## Based on MICRO21_4C.exp with smaller warmup/simulation.
 ##
-## Original: warmup=50M sim=150M
-## Course:   warmup=10M sim=30M
+## Updated: warmup=20M  sim=100M (per-core, matching 1C config)
+## Per design doc Phase 1d: Multi-core performance comparison
 ##
 ###############################################################
 
 
-# configurations
-BASE = --warmup_instructions=10000000 --simulation_instructions=30000000
+# =============================================================================
+# Configuration Variables
+# =============================================================================
+
+BASE = --warmup_instructions=20000000 --simulation_instructions=100000000
 NOPREF = --config=$(PYTHIA_HOME)/config/nopref.ini
 SPP_DEV2 = --l2c_prefetcher_types=spp_dev2 --config=$(PYTHIA_HOME)/config/spp_dev2.ini
 MLOP = --l2c_prefetcher_types=mlop --config=$(PYTHIA_HOME)/config/mlop.ini
@@ -21,7 +24,10 @@ LINUCB = --l2c_prefetcher_types=linucb --config=$(PYTHIA_HOME)/config/linucb.ini
 TSETLIN = --l2c_prefetcher_types=tsetlin --config=$(PYTHIA_HOME)/config/tsetlin.ini
 META_SELECTOR = --l2c_prefetcher_types=meta_selector --config=$(PYTHIA_HOME)/config/meta_selector.ini
 
-# Core experiments: baseline prefetcher comparison (four-core)
+# =============================================================================
+# Phase 1d: Four-core baseline performance comparison (standard DRAM BW)
+# =============================================================================
+
 nopref						$(BASE) $(NOPREF)
 spp						$(BASE) $(SPP_DEV2)
 bingo						$(BASE) $(BINGO)

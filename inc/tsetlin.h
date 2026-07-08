@@ -291,6 +291,7 @@ private:
         int32_t  last_confidence = 0;// vote margin from last prediction (P1.4)
         int32_t  last_delta = 0;     // most recent delta value (P1.5)
         uint8_t  chaos_score = 0;    // delta irregularity EMA, 0=stable 255=random (P1.5)
+        uint8_t  stride_streak = 0;  // P3.0: consecutive same-delta count for bootstrap
         bool     valid = false;
     };
     LastOffsetEntry m_last_offset_table[LAST_OFFSET_TABLE_SIZE];
@@ -365,6 +366,7 @@ private:
             uint64_t learned_positive;
             uint64_t learned_negative;
             uint64_t learn_skipped_no_reward;
+            uint64_t bootstrap_learned;   // P3.0: stride-teacher training events
         } learn;
 
         struct {

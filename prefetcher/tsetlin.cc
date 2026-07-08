@@ -24,6 +24,27 @@ using namespace std;
 // P1.3: increased 64→128 to accommodate delta signature bits and future expansion.
 static constexpr uint32_t MAX_FEATURES = 128;
 
+/* -------------------------------------------------------------------------
+ * P3.0: Find the action index whose offset value is closest to a given delta.
+ * Skips action=0 (no-prefetch).  Used by the Stride bootstrap mechanism to
+ * provide immediate correct training labels during cold start.
+ * ------------------------------------------------------------------------- */
+static uint32_t find_closest_action(int32_t delta, const std::vector<int32_t>& actions)
+{
+    uint32_t best_idx = 0;  // fallback
+    int32_t  best_dist = INT32_MAX;
+    for (uint32_t i = 0; i < actions.size(); i++) {
+        if (actions[i] == 0) continue;  // skip no-prefetch
+        int32_t dist = (delta > actions[i]) ? (delta - actions[i])
+                                            : (actions[i] - delta);
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_idx = i;
+        }
+    }
+    return best_idx;
+}
+
 /* =========================================================================
  * TsetlinMachine Implementation
  * ========================================================================= */
@@ -79,7 +100,7 @@ TsetlinMachine::TsetlinMachine(const Config& cfg)
     // would create one-way TAs that can only strengthen, never weaken, causing
     // the TM to lock up.  Standard config uses N=8, well above this minimum.
     if (m_num_states < 4) {
-        cerr << "FATAL: num_states must be >= 2 for exclude-biased init, got "
+        cerr << "FATAL: num_states must be >= 4 for exclude-biased init, got "
              << m_num_states << endl;
         abort();
     }
@@ -593,6 +614,7 @@ TsetlinPrefetcher::TsetlinPrefetcher(
     m_stats.reward.incorrect = 0; m_stats.reward.no_pref = 0;
     m_stats.learn.called = 0; m_stats.learn.learned_positive = 0;
     m_stats.learn.learned_negative = 0; m_stats.learn.learn_skipped_no_reward = 0;
+    m_stats.learn.bootstrap_learned = 0;
     m_stats.register_fill.called = 0; m_stats.register_fill.set = 0;
 
     m_stats.predict.action_dist.resize(m_max_actions, 0);
@@ -1120,6 +1142,14 @@ void TsetlinPrefetcher::invoke_prefetcher(
             lot_entry.chaos_score = (uint8_t)(
                 ((uint32_t)lot_entry.chaos_score * 7 + change_scaled) / 8);
         }
+        // P3.0: track consecutive same-delta count for Stride bootstrap.
+        // A streak >= 3 means the delta is a reliable stride — we can use it
+        // as a teacher signal to accelerate ML model learning during warmup.
+        if (delta == lot_entry.last_delta) {
+            if (lot_entry.stride_streak < 255) lot_entry.stride_streak++;
+        } else {
+            lot_entry.stride_streak = 1;
+        }
         lot_entry.last_delta = delta;
     } else {
         // First access to this page or page collision: reset all
@@ -1131,6 +1161,7 @@ void TsetlinPrefetcher::invoke_prefetcher(
                                         // false-positive on new pages (P1.5)
         lot_entry.last_confidence = 0;
         lot_entry.chaos_score = 0;    // P1.5: reset chaos on new page
+        lot_entry.stride_streak = 0;  // P3.0: reset stride streak
         lot_entry.last_delta = delta; // P1.5
     }
     // Snapshot current values for feature generation
@@ -1150,6 +1181,34 @@ void TsetlinPrefetcher::invoke_prefetcher(
     int32_t features[MAX_FEATURES];
     generate_features(pc, page, offset, delta, m_bw_level, delta_sig,
                       access_count, last_confidence, features);
+
+    // ---- P3.0: Stride-teacher curriculum learning (bootstrap) ----
+    // When a stable stride pattern is detected (stride_streak >= 3), the
+    // current delta is almost certainly the correct prefetch target.  During
+    // cold start, we use this as a "teacher signal" — directly train the TM
+    // with Type I feedback for the action closest to the observed delta.
+    // This eliminates the trial-and-error phase that dominates Tsetlin's
+    // learning on regular streaming patterns (libquantum, milc, lbm).
+    //
+    // Curriculum: the bootstrap probability decays from 100% to 0% over the
+    // warmup period.  Early on, the TM learns almost entirely from the stride
+    // teacher.  By the end of warmup, it's operating autonomously.
+    if (lot_entry.stride_streak >= 3 && m_invocation_count < m_warmup_invocations) {
+        float warmup_progress = (float)m_invocation_count / (float)m_warmup_invocations;
+        float bootstrap_prob = 1.0f - warmup_progress;  // 1.0 → 0.0
+        std::uniform_real_distribution<float> bootstrap_dist(0.0f, 1.0f);
+        if (bootstrap_dist(m_rng) < bootstrap_prob) {
+            uint32_t stride_action = find_closest_action(delta, m_actions);
+            if (stride_action < m_max_actions && m_actions[stride_action] != 0) {
+                m_stats.learn.bootstrap_learned++;
+                if (m_featurewise) {
+                    train_featurewise(features, stride_action, true);
+                } else {
+                    m_tm->update(features, stride_action, true);
+                }
+            }
+        }
+    }
 
     // ---- Step 3.5: Chaos suppression (P1.5) ----
     // Detect random/irregular access patterns by monitoring the EMA of
@@ -1883,6 +1942,7 @@ void TsetlinPrefetcher::dump_stats() {
     cout << "tsetlin_learn_positive " << m_stats.learn.learned_positive << endl;
     cout << "tsetlin_learn_negative " << m_stats.learn.learned_negative << endl;
     cout << "tsetlin_learn_skipped " << m_stats.learn.learn_skipped_no_reward << endl;
+    cout << "tsetlin_learn_bootstrap " << m_stats.learn.bootstrap_learned << "  # P3.0" << endl;
     cout << endl;
 
     cout << "tsetlin_register_fill_called " << m_stats.register_fill.called << endl;
