@@ -1133,7 +1133,7 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
         // else: still in warmup → suppression disabled, let the bandit learn
     }
 
-    // ---- P2.5: UCB score ratio gating ----
+    // ---- P2.5: UCB score ratio gating (with P2.8 dynamic threshold) ----
     // After P1.6 suppression and normal prediction, check whether the best
     // UCB score significantly exceeds the average.  If all arms have similar
     // scores, there is no clear winner → issuing a prefetch would be random
@@ -1147,6 +1147,17 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
     // Fix: (a) gate is disabled until WARMUP_SAMPLES accumulate (same as P1.6);
     // (b) after warmup, a 5% escape probability is retained so the bandit can
     // recover if the model drifts into an over-conservative state.
+    //
+    // P2.8 DYNAMIC RATIO: The fixed suppress_ratio (default 1.5) is a
+    // one-size-fits-all threshold that systematically under-prefetches on
+    // highly predictable traces (ligra, lbm) where the bandit achieves >90%
+    // accuracy.  We now compute a dynamic threshold from the recent
+    // positive-reward ratio (m_positive_sum / m_reward_count):
+    //   - pos_ratio > 0.70  → ratio = 1.10  (relaxed: pattern is predictable)
+    //   - pos_ratio < 0.30  → ratio = 2.00  (tightened: random access, be conservative)
+    //   - otherwise         → ratio = m_suppress_ratio (default from config)
+    // This lets the gate automatically relax when the bandit is performing
+    // well, recovering coverage that the fixed threshold would suppress.
     //
     // Only applies during exploitation (not ε-greedy probes) and only when
     // the action is not already "no-prefetch".
@@ -1175,7 +1186,20 @@ void ContextualBanditPrefetcher::invoke_prefetcher(
                 ? fabsf(m_cached_best_score) / (fabsf(m_cached_avg_score) + 1e-8f)
                 : 1.0f;
 
-            if (ratio < m_suppress_ratio) {
+            // P2.8: dynamic gating threshold from recent positive-reward ratio.
+            // When the bandit is consistently correct (high pos_ratio), relax
+            // the gate to recover coverage.  When accuracy is poor, tighten it.
+            float effective_ratio = m_suppress_ratio;  // default from config
+            if (m_reward_count > 0.0f) {
+                float pos_ratio = m_positive_sum / m_reward_count;
+                if (pos_ratio > 0.70f) {
+                    effective_ratio = 1.10f;  // relaxed: high-confidence pattern
+                } else if (pos_ratio < 0.30f) {
+                    effective_ratio = 2.00f;  // tightened: random access suspected
+                }
+            }
+
+            if (ratio < effective_ratio) {
                 // P2.5(b): probabilistic, not deterministic.  95% follow the
                 // gate, 5% escape → prevents deadlock if model drifts.
                 if (m_dist(m_rng) < 0.95f) {

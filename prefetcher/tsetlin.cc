@@ -61,10 +61,31 @@ TsetlinMachine::TsetlinMachine(const Config& cfg)
     size_t state_size = m_num_clauses * m_num_features * 2;
     m_ta_state = new uint8_t[state_size];
 
-    // Randomly initialize each automaton to either N or N+1 (the boundary)
+    // P2.8: Exclude-biased initialization for faster cold-start learning.
+    // Initializing at the include/exclude boundary (N or N+1) gives each TA a
+    // 50% chance of being "include", which means each clause randomly contains
+    // ~half the features → almost no clause fires on any input pattern →
+    // Type I feedback ("clause didn't fire" branch) dominates and learning
+    // stalls.  By initializing deep in the exclude side (N-2 or N-1), clauses
+    // start nearly empty → they fire on almost every input → the TM immediately
+    // receives strong learning signals about which features to include.
+    // State N-2 is 2 steps from the include boundary (state > N), providing a
+    // small buffer so that a single noisy Type I feedback doesn't immediately
+    // push a TA into include territory.
+    //
+    // SAFETY: Requires m_num_states >= 4.  With N<4 the init states (N-2, N-1)
+    // are at or near the decrement floor (state ≤ 1), where Type I feedback's
+    // "clause didn't fire → weaken" path is blocked by the `> 1` guard.  This
+    // would create one-way TAs that can only strengthen, never weaken, causing
+    // the TM to lock up.  Standard config uses N=8, well above this minimum.
+    if (m_num_states < 4) {
+        cerr << "FATAL: num_states must be >= 2 for exclude-biased init, got "
+             << m_num_states << endl;
+        abort();
+    }
     std::uniform_int_distribution<int32_t> init_dist(0, 1);
     for (size_t i = 0; i < state_size; i++) {
-        m_ta_state[i] = m_num_states + init_dist(m_rng);  // N or N+1
+        m_ta_state[i] = m_num_states - 2 + init_dist(m_rng);  // N-2 or N-1
     }
 
     // Allocate clause metadata
@@ -656,19 +677,37 @@ void TsetlinPrefetcher::init_featurewise_tms(const TsetlinMachine::Config& base_
         m_feature_tms[2].name = "Context";
     }
 
-    // Proportional clause allocation with minimum per sub-TM
+    // P2.8: Importance-weighted clause allocation (replaces proportional).
+    // Proportional allocation by feature count over-weights the PC+Page hash
+    // group (64 bits → 58% of clauses) and starves the Stride group (21 bits →
+    // 19% of clauses).  In practice, stride features (delta magnitude + offset)
+    // are the single most predictive signal for prefetching — they directly
+    // determine the prefetch address.  Weights are chosen to give Stride equal
+    // footing with PC+Page while keeping a modest share for Context features.
+    //
+    // 3-group case:  PC+Page 40% | Stride 40% | Context 20%
+    // 2-group case:  PC+Page 45% | Stride 55% (Context weight redistributed)
     uint32_t total_clauses = base_cfg.num_clauses;
     uint32_t min_clauses = base_cfg.num_actions * 2;  // TM constructor requirement
-    uint32_t total_features = m_hash_feature_bits + stride_feat_count
-                            + context_feat_count;
+
+    // Importance weights per group (indexed by group position, not feature type)
+    float group_weights[3];
+    if (group_count == 3) {
+        group_weights[0] = 0.40f;  // PC+Page
+        group_weights[1] = 0.40f;  // Stride
+        group_weights[2] = 0.20f;  // Context
+    } else {
+        group_weights[0] = 0.45f;  // PC+Page
+        group_weights[1] = 0.55f;  // Stride
+    }
 
     for (uint32_t g = 0; g < group_count; g++) {
         TsetlinMachine::Config cfg = base_cfg;
         cfg.num_features = m_feature_tms[g].feat_count;
 
-        // Proportional clause count: round(total * feat_count / total_features)
+        // Importance-weighted clause count
         uint32_t proportional = (uint32_t)(
-            (float)total_clauses * (float)cfg.num_features / (float)total_features + 0.5f);
+            (float)total_clauses * group_weights[g] + 0.5f);
         if (proportional < min_clauses) proportional = min_clauses;
         cfg.num_clauses = proportional;
 
