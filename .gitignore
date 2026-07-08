@@ -7,9 +7,12 @@
 bin/
 obj/
 
-# Traces
+# Traces (CloudSuite traces included in repo for network accessibility)
 dpc3_traces/
-traces/
+traces/*
+!traces/cassandra_phase0_core0.trace.xz
+!traces/nutch_phase0_core0.trace.xz
+!traces/streaming_phase0_core1.trace.xz
 cvp1_traces/
 
 # Run directory
